@@ -1,4 +1,4 @@
-import { EditorView, keymap, lineNumbers } from '@codemirror/view';
+import { EditorView, keymap, lineNumbers, drawSelection } from '@codemirror/view';
 import { EditorState, Prec } from '@codemirror/state';
 import { defaultKeymap, indentWithTab } from '@codemirror/commands';
 import { python } from '@codemirror/lang-python';
@@ -62,6 +62,7 @@ export class Notebook {
         extensions: [
           vim(),
           lineNumbers(),
+          drawSelection(),
           syntaxHighlighting(defaultHighlightStyle),
           lang,
           keymap.of([indentWithTab, ...defaultKeymap]),

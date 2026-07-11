@@ -27,7 +27,7 @@ pip install jupyter-server ipykernel
 
 **File tree** — arrow keys (or `hjkl`) to navigate, `→`/`Enter` to open.
 
-**Editor** — full vim keybindings (via codemirror-vim); `:w` `:q` `:wq` work.
+**Editor** — full vim keybindings (via codemirror-vim). Ex commands: `:w` `:q` `:wq` `:x` `:qa` (quit app), `:e <path>` (open file), `:term` (toggle terminal), `:Ex` (toggle file tree).
 
 **Notebook (.ipynb)** — vim-style command mode on cells:
 

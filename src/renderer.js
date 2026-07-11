@@ -1,10 +1,10 @@
 import './style.css';
-import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view';
+import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection } from '@codemirror/view';
 import { EditorState, Compartment } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { syntaxHighlighting, defaultHighlightStyle, indentUnit } from '@codemirror/language';
-import { vim, Vim } from '@replit/codemirror-vim';
+import { vim, Vim, getCM } from '@replit/codemirror-vim';
 import { python } from '@codemirror/lang-python';
 import { javascript } from '@codemirror/lang-javascript';
 import { json } from '@codemirror/lang-json';
@@ -53,10 +53,19 @@ const editorView = new EditorView({
   parent: els.editor
 });
 
-// :w / :wq / :q inside vim
+// nvim-style ex commands (apply to the file editor and notebook cells alike)
 Vim.defineEx('write', 'w', () => { saveCurrent(); });
 Vim.defineEx('quit', 'q', () => { closeFile(); });
 Vim.defineEx('wq', 'wq', async () => { await saveCurrent(); closeFile(); });
+Vim.defineEx('xit', 'x', async () => { await saveCurrent(); closeFile(); });
+Vim.defineEx('qall', 'qa', () => { window.close(); });
+Vim.defineEx('edit', 'e', (_cm, params) => {
+  const f = params.args?.[0];
+  if (!f) { setStatus('E32: no file name — usage :e <path>'); return; }
+  openFile(f.startsWith('/') ? f : (state.folder ? state.folder + '/' + f : f));
+});
+Vim.defineEx('terminal', 'term', () => { toggleTerm(); });
+Vim.defineEx('explore', 'Ex', () => { toggleTree(); });
 
 const notebook = new Notebook(els.notebook, { onStatus: setStatus, onDirty: setDirty });
 
@@ -91,6 +100,7 @@ function baseExtensions(path) {
   return [
     vim({ status: true }),
     lineNumbers(),
+    drawSelection(),
     history(),
     highlightActiveLine(),
     highlightActiveLineGutter(),
@@ -166,9 +176,16 @@ window.addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveCurrent(); return; }
   if (mod && e.key.toLowerCase() === 'j') { e.preventDefault(); toggleTerm(); return; }
 
-  // \e chord for the file tree — only when not typing in an editor/terminal input context
-  const inEditor = e.target.closest?.('.cm-editor, .xterm');
-  if (!inEditor && !mod) {
+  // \e chord for the file tree — works everywhere except the terminal and vim insert mode
+  const inTerm = e.target.closest?.('.xterm');
+  const editorEl = e.target.closest?.('.cm-editor');
+  let vimTyping = false;
+  if (editorEl) {
+    const view = EditorView.findFromDOM(editorEl);
+    const vs = view && getCM(view)?.state.vim;
+    vimTyping = !vs || vs.insertMode || vs.visualMode;
+  }
+  if (!inTerm && !vimTyping && !mod) {
     if (leader) {
       leader = false;
       if (e.key === 'e') { e.preventDefault(); toggleTree(); return; }
