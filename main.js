@@ -6,6 +6,11 @@ const { spawn } = require('child_process');
 const crypto = require('crypto');
 const pty = require('node-pty');
 
+// file:// is an insecure context, so Chromium's Private Network Access rules
+// would block fetch/ws to the local jupyter server without these:
+app.commandLine.appendSwitch('disable-features',
+  'PrivateNetworkAccessSendPreflights,PrivateNetworkAccessRespectPreflightResults,LocalNetworkAccessChecks');
+
 let win = null;
 const ptys = new Map(); // id -> pty
 let jupyter = null;     // { proc, url, token }
@@ -81,6 +86,56 @@ ipcMain.on('pty:resize', (_e, { id, cols, rows }) => { try { ptys.get(id)?.resiz
 ipcMain.on('pty:kill', (_e, { id }) => { try { ptys.get(id)?.kill(); } catch {} ptys.delete(id); });
 
 // ---------- jupyter server (for ipynb execution) ----------
+function pythonCandidates() {
+  const home = os.homedir();
+  const fixed = [
+    '/Library/Frameworks/Python.framework/Versions/Current/bin/python3',
+    '/opt/homebrew/bin/python3',
+    '/usr/local/bin/python3',
+    `${home}/.local/bin/python`,
+    `${home}/miniconda3/bin/python`,
+    `${home}/anaconda3/bin/python`
+  ].filter(p => fs.existsSync(p));
+  return [...new Set([...fixed, 'python3', 'python'])];
+}
+
+function tryJupyter(py, args, cwd, token) {
+  return new Promise((resolve) => {
+    let proc;
+    try { proc = spawn(py, args, { cwd, env: process.env }); }
+    catch (err) { return resolve({ error: String(err) }); }
+    let settled = false;
+    let buf = '';
+    const done = (r) => { if (!settled) { settled = true; resolve(r); } };
+    const onOut = async (d) => {
+      buf += d.toString();
+      const m = buf.match(/https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)\//);
+      if (m && !settled) {
+        settled = true; // claim before the async readiness wait
+        const url = `http://127.0.0.1:${m[1]}`;
+        // the URL is printed before the socket accepts connections — wait for it
+        for (let i = 0; i < 60; i++) {
+          try {
+            const r = await fetch(`${url}/api/status?token=${token}`);
+            if (r.ok) break;
+          } catch {}
+          await new Promise(r => setTimeout(r, 250));
+        }
+        jupyter = { proc, url, token };
+        proc.removeAllListeners('exit');
+        proc.on('exit', () => { jupyter = null; });
+        resolve({ url, token });
+      }
+      if (/No module named/.test(buf)) { try { proc.kill(); } catch {} done({ error: 'no-module' }); }
+    };
+    proc.stdout.on('data', onOut);
+    proc.stderr.on('data', onOut);
+    proc.on('error', (err) => done({ error: 'no-module', detail: String(err) }));
+    proc.on('exit', () => done({ error: 'jupyter server exited: ' + buf.slice(-400) }));
+    setTimeout(() => { try { proc.kill(); } catch {} done({ error: 'jupyter server timed out starting' }); }, 20000);
+  });
+}
+
 ipcMain.handle('jupyter:start', async (_e, cwd) => {
   if (jupyter) return { url: jupyter.url, token: jupyter.token };
   const token = crypto.randomBytes(24).toString('hex');
@@ -93,40 +148,15 @@ ipcMain.handle('jupyter:start', async (_e, cwd) => {
     `--ServerApp.token=${token}`,
     '--ServerApp.password=',
     '--ServerApp.disable_check_xsrf=True',
+    '--ServerApp.allow_origin=*',
     `--ServerApp.root_dir=${cwd || os.homedir()}`
   ];
-  const candidates = ['python3', 'python'];
-  let proc = null, lastErr = null;
-  for (const py of candidates) {
-    try {
-      proc = spawn(py, args, { cwd: cwd || os.homedir(), env: process.env });
-      break;
-    } catch (err) { lastErr = err; }
+  const tried = [];
+  for (const py of pythonCandidates()) {
+    const r = await tryJupyter(py, args, cwd || os.homedir(), token);
+    if (r.url) return r;
+    tried.push(py);
+    if (r.error !== 'no-module') return r; // real failure, not a missing install
   }
-  if (!proc) return { error: String(lastErr) };
-
-  return new Promise((resolve) => {
-    let settled = false;
-    let buf = '';
-    const onOut = (d) => {
-      buf += d.toString();
-      const m = buf.match(/https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)\//);
-      if (m && !settled) {
-        settled = true;
-        jupyter = { proc, url: `http://127.0.0.1:${m[1]}`, token };
-        resolve({ url: jupyter.url, token });
-      }
-      if (/No module named/.test(buf) && !settled) {
-        settled = true;
-        resolve({ error: 'jupyter_server not installed (pip install jupyter-server ipykernel)' });
-      }
-    };
-    proc.stdout.on('data', onOut);
-    proc.stderr.on('data', onOut);
-    proc.on('exit', () => {
-      jupyter = null;
-      if (!settled) { settled = true; resolve({ error: 'jupyter server exited: ' + buf.slice(-400) }); }
-    });
-    setTimeout(() => { if (!settled) { settled = true; resolve({ error: 'jupyter server timed out starting' }); } }, 20000);
-  });
+  return { error: `jupyter_server not found in any python (tried: ${tried.join(', ')}) — pip install jupyter-server ipykernel` };
 });
