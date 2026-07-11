@@ -2,18 +2,36 @@
 
 An extremely minimal, vim-first personal desktop IDE. Electron + CodeMirror 6 + xterm.js.
 
-## Run
+- Vim keybindings everywhere, nvim-style command line
+- First-class `.ipynb` notebooks: cell editing, live run times, LaTeX/markdown rendering, local Jupyter kernel
+- Real built-in terminal (your shell, via node-pty)
+- Gruvbox-hard theme, near-zero UI chrome
+
+## Install
+
+**Prerequisites**
+
+| What | Why | Get it |
+| --- | --- | --- |
+| Node.js ≥ 20 + npm | runs/builds the app | <https://nodejs.org> or `brew install node` |
+| Python 3 + Jupyter | *(optional)* only for running notebook cells | `pip install jupyter-server ipykernel` |
+
+**Steps**
 
 ```sh
-npm install
-npm start
+git clone https://github.com/quip0/quip_ide.git
+cd quip_ide
+npm install     # also downloads Electron and rebuilds node-pty for it
+npm start       # build + launch the app
 ```
 
-Notebook execution needs Jupyter available to `python3`:
+That's it — a window opens; hit `⌘O` to open a folder. Everything but notebook execution works with zero extra setup. To run notebook cells, install the Jupyter bits above (any of framework/homebrew/conda/`~/.local` Pythons are auto-detected).
 
-```sh
-pip install jupyter-server ipykernel
-```
+**Troubleshooting**
+
+- *"Electron failed to install correctly"* — the binary download was interrupted. Fix: `rm -rf node_modules/electron && npm install`.
+- *Terminal pane doesn't open* — node-pty needs to be built against Electron: `npx electron-rebuild -f -w node-pty` (normally automatic via postinstall).
+- *"jupyter_server not found in any python"* — `pip install jupyter-server ipykernel` for whichever Python you use, then rerun the cell.
 
 ## Keys
 
