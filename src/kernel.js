@@ -36,7 +36,12 @@ export class Kernel {
       h.onOutput(t, msg.content);
     } else if (t === 'execute_reply') {
       h.count = msg.content.execution_count;
-    } else if (t === 'status' && msg.content.execution_state === 'idle' && h.count !== undefined) {
+      h.replied = true;
+    } else if (t === 'status' && msg.content.execution_state === 'idle') {
+      h.idle = true;
+    }
+    // reply (shell) and idle (iopub) arrive on separate channels in either order
+    if (h.replied && h.idle) {
       this.pending.delete(parent);
       h.onDone(h.count);
     }
