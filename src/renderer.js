@@ -34,6 +34,7 @@ const state = {
   termVisible: false
 };
 let leader = false;           // '\' pressed, waiting for the chord key
+const split = { open: false, pending: false, kind: null, path: null, nb: null };
 const textStates = new Map(); // path -> EditorState (preserves undo history)
 const notebooks = new Map();  // path -> { nb: Notebook, el }
 const dirtyMap = new Map();   // path -> bool
@@ -55,6 +56,7 @@ function setModeLabel(label, cls) {
   els.statusM.className = cls || '';
 }
 function refreshMode() {
+  updatePaneFocus();
   if (leader) return setModeLabel('\\ …', 'm-passive');
   const a = document.activeElement;
   if (a?.closest('#cmdline') || a?.closest('.cm-vim-panel')) return setModeLabel('COMMAND', 'm-term');
@@ -219,7 +221,6 @@ async function saveCurrent() {
 }
 
 // ---------- split pane ----------
-const split = { open: false, pending: false, kind: null, path: null, nb: null };
 let splitEditor = null;
 let splitTerm = null;
 
@@ -251,6 +252,7 @@ function showSplitContent(kind) {
 
 function openSplit() {
   els.split.classList.remove('hidden');
+  $('pane-divider').classList.remove('hidden');
   split.open = true;
   split.pending = true;
   showSplitContent('placeholder');
@@ -326,9 +328,40 @@ function closeSplit() {
   if (!split.open) return;
   stashSplit();
   els.split.classList.add('hidden');
+  $('pane-divider').classList.add('hidden');
+  els.split.style.width = ''; els.split.style.flex = '';
+  updatePaneFocus();
   split.open = false; split.pending = false; split.kind = null; split.path = null;
   term.resize();
   focusActive();
+}
+
+// draggable divider — resizes the split by pinning its width
+const divider = $('pane-divider');
+divider.addEventListener('mousedown', (e) => {
+  e.preventDefault();
+  divider.classList.add('dragging');
+  const startX = e.clientX;
+  const startW = els.split.getBoundingClientRect().width;
+  const total = $('panes').getBoundingClientRect().width;
+  const onMove = (ev) => {
+    const w = Math.min(Math.max(startW + (startX - ev.clientX), 180), total - 180);
+    els.split.style.flex = 'none';
+    els.split.style.width = w + 'px';
+  };
+  const onUp = () => {
+    divider.classList.remove('dragging');
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+  };
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+});
+
+function updatePaneFocus() {
+  const inSplit = !!document.activeElement?.closest('#split');
+  els.split.classList.toggle('pane-focused', split.open && inSplit);
+  els.content.classList.toggle('pane-focused', split.open && !inSplit);
 }
 
 async function saveSplit() {
