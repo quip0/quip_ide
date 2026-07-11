@@ -104,6 +104,17 @@ kbd {
 #term { height: 100%; }
 .xterm .xterm-viewport { background: var(--bg) !important; }
 
+/* global command line */
+#cmdline {
+  flex: none; display: flex; align-items: center; min-height: 24px;
+  padding: 4px 10px; background: var(--bg2); border-top: 1px solid var(--border);
+  font-size: 14px; color: var(--accent);
+}
+#cmdline input {
+  flex: 1; border: none; outline: none; background: transparent;
+  color: var(--accent); font-family: var(--mono); font-size: 14px; caret-color: var(--accent);
+}
+
 /* status bar */
 #status {
   flex: none; height: 22px; display: flex; justify-content: space-between; align-items: center;

@@ -83,19 +83,55 @@ const editorView = new EditorView({
   parent: els.editor
 });
 
-// nvim-style ex commands (apply to the file editor and notebook cells alike)
-Vim.defineEx('write', 'w', () => { saveCurrent(); });
-Vim.defineEx('quit', 'q', () => { closeFile(); });
-Vim.defineEx('wq', 'wq', async () => { await saveCurrent(); closeFile(); });
-Vim.defineEx('xit', 'x', async () => { await saveCurrent(); closeFile(); });
-Vim.defineEx('qall', 'qa', () => { window.close(); });
-Vim.defineEx('edit', 'e', (_cm, params) => {
-  const f = params.args?.[0];
-  if (!f) { setStatus('E32: no file name — usage :e <path>'); return; }
-  openFile(f.startsWith('/') ? f : (state.folder ? state.folder + '/' + f : f));
+// nvim-style ex commands — one dispatcher shared by the in-editor vim command
+// line and the global command bar
+async function runEx(line) {
+  const [cmd, ...args] = line.trim().split(/\s+/);
+  if (!cmd) return;
+  switch (cmd) {
+    case 'w': case 'write': return saveCurrent();
+    case 'q': case 'quit': return closeFile();
+    case 'wq': case 'x': case 'xit': await saveCurrent(); return closeFile();
+    case 'qa': case 'qall': return window.close();
+    case 'e': case 'edit': {
+      const f = args[0];
+      if (!f) return setStatus('E32: no file name — usage :e <path>');
+      return openFile(f.startsWith('/') ? f : (state.folder ? state.folder + '/' + f : f));
+    }
+    case 'term': case 'terminal': return toggleTerm();
+    case 'Ex': case 'Explore': return toggleTree();
+    default: setStatus(`E492: not an editor command: ${cmd}`);
+  }
+}
+for (const [name, alias] of [
+  ['write', 'w'], ['quit', 'q'], ['wq', 'wq'], ['xit', 'x'], ['qall', 'qa'],
+  ['edit', 'e'], ['terminal', 'term'], ['Explore', 'Ex']
+]) {
+  Vim.defineEx(name, alias, (_cm, params) => runEx([alias, ...(params.args || [])].join(' ')));
+}
+
+// global command bar — ':' from the tree, notebook command mode, or welcome screen
+const cmdlineEl = $('cmdline');
+const cmdlineInput = $('cmdline-input');
+let cmdlineReturnFocus = null;
+function openCmdline() {
+  cmdlineReturnFocus = document.activeElement;
+  cmdlineEl.classList.remove('hidden');
+  cmdlineInput.value = '';
+  cmdlineInput.focus();
+  setModeLabel('COMMAND', 'm-term');
+}
+function closeCmdline() {
+  cmdlineEl.classList.add('hidden');
+  if (cmdlineReturnFocus?.isConnected) cmdlineReturnFocus.focus(); else document.body.focus();
+  refreshMode();
+}
+cmdlineInput.addEventListener('keydown', (e) => {
+  e.stopPropagation();
+  if (e.key === 'Enter') { const v = cmdlineInput.value; closeCmdline(); runEx(v); }
+  else if (e.key === 'Escape') closeCmdline();
 });
-Vim.defineEx('terminal', 'term', () => { toggleTerm(); });
-Vim.defineEx('Explore', 'Ex', () => { toggleTree(); });
+cmdlineInput.addEventListener('blur', () => cmdlineEl.classList.add('hidden'));
 
 const notebook = new Notebook(els.notebook, { onStatus: setStatus, onDirty: setDirty });
 
@@ -220,6 +256,12 @@ window.addEventListener('keydown', (e) => {
     const view = EditorView.findFromDOM(editorEl);
     const vs = view && getCM(view)?.state.vim;
     vimTyping = !vs || vs.insertMode || vs.visualMode;
+  }
+  // ':' outside any editor/terminal opens the global command bar
+  if (!inTerm && !editorEl && !mod && e.key === ':') {
+    e.preventDefault(); e.stopPropagation();
+    openCmdline();
+    return;
   }
   if (!inTerm && !vimTyping && !mod) {
     if (leader) {
