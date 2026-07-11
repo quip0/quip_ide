@@ -20,8 +20,36 @@ const $ = (id) => document.getElementById(id);
 const els = {
   tree: $('tree'), welcome: $('welcome'), editor: $('editor'), notebook: $('notebook'),
   termwrap: $('termwrap'), term: $('term'),
-  statusL: $('status-left'), statusR: $('status-right')
+  statusL: $('status-left'), statusR: $('status-right'), statusM: $('status-mode')
 };
+
+// ---------- mode indicator ----------
+function setModeLabel(label, cls) {
+  els.statusM.textContent = label;
+  els.statusM.className = cls || '';
+}
+function refreshMode() {
+  const a = document.activeElement;
+  if (a?.closest('.xterm')) return setModeLabel('TERMINAL', 'm-term');
+  if (a === els.tree || a?.closest('#tree')) return setModeLabel('FILES', 'm-passive');
+  if (a === els.notebook) return setModeLabel('CELL', 'm-passive');
+  const editorEl = a?.closest('.cm-editor');
+  if (editorEl) {
+    const view = EditorView.findFromDOM(editorEl);
+    const vs = view && getCM(view)?.state.vim;
+    if (vs?.insertMode) return setModeLabel('INSERT', 'm-insert');
+    if (vs?.visualMode) {
+      return setModeLabel(vs.visualBlock ? 'V-BLOCK' : vs.visualLine ? 'V-LINE' : 'VISUAL', 'm-visual');
+    }
+    return setModeLabel('NORMAL', '');
+  }
+  setModeLabel('');
+}
+// vim mode changes don't move focus, so also poll cheaply on any key/mouse activity
+document.addEventListener('focusin', () => refreshMode());
+document.addEventListener('focusout', () => setTimeout(refreshMode, 0));
+window.addEventListener('keyup', () => refreshMode(), true);
+window.addEventListener('mouseup', () => refreshMode(), true);
 
 const state = {
   folder: null,

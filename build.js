@@ -5,6 +5,6 @@ esbuild.buildSync({
   bundle: true,
   outfile: 'dist/renderer.js',
   format: 'iife',
-  loader: { '.css': 'css' },
+  loader: { '.css': 'css', '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
   logLevel: 'info'
 });

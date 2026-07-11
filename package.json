@@ -30,6 +30,8 @@
     "@replit/codemirror-vim": "^6.2.1",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
+    "katex": "^0.17.0",
+    "marked": "^18.0.6",
     "node-pty": "^1.0.0"
   }
 }
