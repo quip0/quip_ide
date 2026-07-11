@@ -65,7 +65,7 @@ Vim.defineEx('edit', 'e', (_cm, params) => {
   openFile(f.startsWith('/') ? f : (state.folder ? state.folder + '/' + f : f));
 });
 Vim.defineEx('terminal', 'term', () => { toggleTerm(); });
-Vim.defineEx('explore', 'Ex', () => { toggleTree(); });
+Vim.defineEx('Explore', 'Ex', () => { toggleTree(); });
 
 const notebook = new Notebook(els.notebook, { onStatus: setStatus, onDirty: setDirty });
 
