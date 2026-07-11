@@ -1,6 +1,6 @@
 import './style.css';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection } from '@codemirror/view';
-import { EditorState, Compartment } from '@codemirror/state';
+import { EditorState } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { indentUnit, bracketMatching } from '@codemirror/language';
@@ -19,10 +19,33 @@ import { Notebook } from './notebook.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
-  tree: $('tree'), welcome: $('welcome'), editor: $('editor'), notebook: $('notebook'),
-  termwrap: $('termwrap'), term: $('term'),
-  statusL: $('status-left'), statusR: $('status-right'), statusM: $('status-mode')
+  tree: $('tree'), welcome: $('welcome'), editor: $('editor'), tabs: $('tabs'),
+  content: $('content'), termwrap: $('termwrap'), term: $('term'),
+  statusL: $('status-left'), statusR: $('status-right'), statusM: $('status-mode'),
+  cheat: $('cheat-overlay'), cheatPanel: $('cheat-panel')
 };
+
+const state = {
+  folder: null,
+  tabs: [],          // [{ path }]
+  active: null,      // active path
+  treeVisible: false,
+  termVisible: false
+};
+const textStates = new Map(); // path -> EditorState (preserves undo history)
+const notebooks = new Map();  // path -> { nb: Notebook, el }
+const dirtyMap = new Map();   // path -> bool
+
+const isNb = (p) => p.endsWith('.ipynb');
+const base = (p) => p.split('/').pop();
+
+function setStatus(left) { els.statusL.innerHTML = left || ''; }
+function updateStatusRight() {
+  const p = state.active;
+  const name = p ? (state.folder && p.startsWith(state.folder + '/') ? p.slice(state.folder.length + 1) : p) : '';
+  els.statusR.innerHTML = name ? `${name}${dirtyMap.get(p) ? ' <span class="dirty">●</span>' : ''}` : '';
+}
+function setDirty(path, d) { dirtyMap.set(path, d); renderTabs(); updateStatusRight(); }
 
 // ---------- mode indicator ----------
 function setModeLabel(label, cls) {
@@ -31,10 +54,10 @@ function setModeLabel(label, cls) {
 }
 function refreshMode() {
   const a = document.activeElement;
-  if (a?.closest('.cm-vim-panel')) return setModeLabel('COMMAND', 'm-term');
+  if (a?.closest('#cmdline') || a?.closest('.cm-vim-panel')) return setModeLabel('COMMAND', 'm-term');
   if (a?.closest('.xterm')) return setModeLabel('TERMINAL', 'm-term');
   if (a === els.tree || a?.closest('#tree')) return setModeLabel('FILES', 'm-passive');
-  if (a === els.notebook) return setModeLabel('CELL', 'm-passive');
+  if (a?.classList?.contains('notebook-view')) return setModeLabel('CELL', 'm-passive');
   const editorEl = a?.closest('.cm-editor');
   if (editorEl) {
     const view = EditorView.findFromDOM(editorEl);
@@ -47,27 +70,10 @@ function refreshMode() {
   }
   setModeLabel('');
 }
-// vim mode changes don't move focus, so also poll cheaply on any key/mouse activity
 document.addEventListener('focusin', () => refreshMode());
 document.addEventListener('focusout', () => setTimeout(refreshMode, 0));
 window.addEventListener('keyup', () => refreshMode(), true);
 window.addEventListener('mouseup', () => refreshMode(), true);
-
-const state = {
-  folder: null,
-  file: null,        // current file path
-  mode: 'welcome',   // welcome | editor | notebook
-  dirty: false,
-  treeVisible: false,
-  termVisible: false
-};
-
-function setStatus(left) { els.statusL.innerHTML = left || ''; }
-function updateStatusRight() {
-  const name = state.file ? state.file.replace(state.folder + '/', '') : '';
-  els.statusR.innerHTML = name ? `${name}${state.dirty ? ' <span class="dirty">●</span>' : ''}` : '';
-}
-function setDirty(d) { state.dirty = d; updateStatusRight(); }
 
 // ---------- editor ----------
 function langFor(path) {
@@ -78,13 +84,171 @@ function langFor(path) {
   }[ext]?.() ?? [];
 }
 
+function baseExtensions(path) {
+  return [
+    vim({ status: true }),
+    lineNumbers(),
+    drawSelection(),
+    history(),
+    highlightActiveLine(),
+    highlightActiveLineGutter(),
+    highlightSelectionMatches(),
+    bracketMatching(),
+    gruvboxHighlight,
+    gruvboxEditorTheme,
+    indentUnit.of('    '),
+    langFor(path),
+    keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap]),
+    EditorView.updateListener.of(u => {
+      if (u.docChanged && state.active && !isNb(state.active)) setDirty(state.active, true);
+    })
+  ];
+}
+
 const editorView = new EditorView({
   state: EditorState.create({ doc: '', extensions: baseExtensions('') }),
   parent: els.editor
 });
 
-// nvim-style ex commands — one dispatcher shared by the in-editor vim command
-// line and the global command bar
+// ---------- tabs ----------
+function renderTabs() {
+  els.tabs.classList.toggle('hidden', state.tabs.length === 0);
+  els.tabs.innerHTML = '';
+  for (const t of state.tabs) {
+    const d = document.createElement('div');
+    d.className = 'tab' + (t.path === state.active ? ' active' : '');
+    d.textContent = base(t.path);
+    if (dirtyMap.get(t.path)) {
+      const dot = document.createElement('span');
+      dot.className = 'tdirty';
+      dot.textContent = '●';
+      d.appendChild(dot);
+    }
+    d.onclick = () => activate(t.path);
+    els.tabs.appendChild(d);
+  }
+}
+
+function stashActive() {
+  if (state.active && !isNb(state.active)) textStates.set(state.active, editorView.state);
+}
+
+function showOnly(what) { // 'welcome' | 'editor' | notebook path
+  els.welcome.classList.toggle('hidden', what !== 'welcome');
+  els.editor.classList.toggle('hidden', what !== 'editor');
+  for (const [p, { el }] of notebooks) el.classList.toggle('hidden', what !== p);
+}
+
+async function activate(path) {
+  stashActive();
+  state.active = path;
+  if (isNb(path)) {
+    let entry = notebooks.get(path);
+    if (!entry) {
+      const el = document.createElement('div');
+      el.className = 'notebook-view hidden';
+      el.tabIndex = 0;
+      els.content.appendChild(el);
+      const nb = new Notebook(el, { onStatus: setStatus, onDirty: (d) => setDirty(path, d) });
+      entry = { nb, el };
+      notebooks.set(path, entry);
+      showOnly(path);
+      try { await nb.open(path, state.folder); }
+      catch (err) { setStatus('failed to open notebook: ' + err.message); }
+    } else {
+      showOnly(path);
+      entry.el.focus();
+    }
+  } else {
+    showOnly('editor');
+    const cached = textStates.get(path);
+    if (cached) editorView.setState(cached);
+    else {
+      let text;
+      try { text = await window.quip.readFile(path); }
+      catch (err) { setStatus('cannot open: ' + err.message); return; }
+      editorView.setState(EditorState.create({ doc: text, extensions: baseExtensions(path) }));
+    }
+    editorView.focus();
+  }
+  renderTabs();
+  updateStatusRight();
+}
+
+async function openFile(path) {
+  if (!state.tabs.find(t => t.path === path)) {
+    state.tabs.push({ path });
+    dirtyMap.set(path, dirtyMap.get(path) || false);
+  }
+  await activate(path);
+}
+
+function closeFile() {
+  const p = state.active;
+  if (!p) return;
+  if (dirtyMap.get(p) && !confirm(`${base(p)} has unsaved changes — close anyway?`)) return;
+  const i = state.tabs.findIndex(t => t.path === p);
+  state.tabs.splice(i, 1);
+  textStates.delete(p);
+  dirtyMap.delete(p);
+  const nb = notebooks.get(p);
+  if (nb) { nb.el.remove(); notebooks.delete(p); }
+  const next = state.tabs[Math.min(i, state.tabs.length - 1)];
+  if (next) activate(next.path);
+  else { state.active = null; showOnly('welcome'); renderTabs(); updateStatusRight(); }
+}
+
+function cycleTab(dir) {
+  if (state.tabs.length < 2) return;
+  const i = state.tabs.findIndex(t => t.path === state.active);
+  activate(state.tabs[(i + dir + state.tabs.length) % state.tabs.length].path);
+}
+
+async function saveCurrent() {
+  const p = state.active;
+  if (!p) return;
+  if (isNb(p)) { await notebooks.get(p)?.nb.save(); return; }
+  await window.quip.writeFile(p, editorView.state.doc.toString());
+  setDirty(p, false);
+  setStatus('saved ' + base(p));
+}
+
+// ---------- cheatsheet ----------
+const CHEAT = [
+  ['GLOBAL', [
+    ['⌘O', 'open folder'], ['\\ e', 'toggle file tree'], ['⌘J', 'toggle terminal'],
+    ['⌘S', 'save'], ['⌘+ / ⌘− / ⌘0', 'zoom in / out / reset'],
+    ['⌘⇧] / ⌘⇧[', 'next / previous tab'], [':', 'command line (works anywhere)']
+  ]],
+  ['COMMANDS', [
+    [':w :q :wq :x', 'save / close tab / both'], [':qa', 'quit app'],
+    [':e <path>', 'open file'], [':term', 'toggle terminal'], [':Ex', 'toggle file tree'], [':cheat', 'this cheatsheet']
+  ]],
+  ['FILE TREE', [
+    ['↑↓ / j k', 'move'], ['→ / l', 'expand / open'], ['← / h', 'collapse / parent'], ['Enter', 'open']
+  ]],
+  ['NOTEBOOK (cell mode)', [
+    ['j / k', 'next / previous cell'], ['Enter / i', 'edit cell'], ['Esc', 'back to cell mode'],
+    ['⇧Enter', 'run + advance'], ['^Enter', 'run in place'], ['R', 'run all cells'],
+    ['a / b', 'new cell above / below'], ['dd', 'delete cell'], ['m / y', 'markdown / code'],
+    ['gg / G', 'first / last cell']
+  ]],
+  ['EDITOR', [['(vim)', 'full vim keybindings via codemirror-vim']]]
+];
+function toggleCheat(force) {
+  const show = force ?? els.cheat.classList.contains('hidden');
+  if (show) {
+    els.cheatPanel.innerHTML = CHEAT.map(([title, rows]) =>
+      `<h3>${title}</h3>` + rows.map(([k, w]) => `<div class="row"><span class="keys">${k}</span><span class="what">${w}</span></div>`).join('')
+    ).join('') + '<div class="close-hint">Esc or :cheat to close</div>';
+    els.cheat.classList.remove('hidden');
+  } else {
+    els.cheat.classList.add('hidden');
+  }
+}
+els.cheat.addEventListener('click', () => toggleCheat(false));
+
+// ---------- ex commands ----------
 async function runEx(line) {
   const [cmd, ...args] = line.trim().split(/\s+/);
   if (!cmd) return;
@@ -100,17 +264,22 @@ async function runEx(line) {
     }
     case 'term': case 'terminal': return toggleTerm();
     case 'Ex': case 'Explore': return toggleTree();
+    case 'cheat': return toggleCheat();
+    case 'runall': return notebooks.get(state.active)?.nb.runAll();
+    case 'tabn': case 'bn': return cycleTab(1);
+    case 'tabp': case 'bp': return cycleTab(-1);
     default: setStatus(`E492: not an editor command: ${cmd}`);
   }
 }
 for (const [name, alias] of [
   ['write', 'w'], ['quit', 'q'], ['wq', 'wq'], ['xit', 'x'], ['qall', 'qa'],
-  ['edit', 'e'], ['terminal', 'term'], ['Explore', 'Ex']
+  ['edit', 'e'], ['terminal', 'term'], ['Explore', 'Ex'], ['cheat', 'cheat'],
+  ['runall', 'runall'], ['tabnext', 'tabn'], ['tabprev', 'tabp']
 ]) {
   Vim.defineEx(name, alias, (_cm, params) => runEx([alias, ...(params.args || [])].join(' ')));
 }
 
-// global command bar — ':' from the tree, notebook command mode, or welcome screen
+// ---------- global command bar ----------
 const cmdlineEl = $('cmdline');
 const cmdlineInput = $('cmdline-input');
 let cmdlineReturnFocus = null;
@@ -133,69 +302,6 @@ cmdlineInput.addEventListener('keydown', (e) => {
 });
 cmdlineInput.addEventListener('blur', () => cmdlineEl.classList.add('hidden'));
 
-const notebook = new Notebook(els.notebook, { onStatus: setStatus, onDirty: setDirty });
-
-function show(mode) {
-  state.mode = mode;
-  els.welcome.classList.toggle('hidden', mode !== 'welcome');
-  els.editor.classList.toggle('hidden', mode !== 'editor');
-  els.notebook.classList.toggle('hidden', mode !== 'notebook');
-}
-
-async function openFile(path) {
-  if (state.dirty && state.file && !confirm('Discard unsaved changes?')) return;
-  state.file = path;
-  if (path.endsWith('.ipynb')) {
-    show('notebook');
-    setDirty(false);
-    try { await notebook.open(path, state.folder); }
-    catch (err) { setStatus('failed to open notebook: ' + err.message); }
-  } else {
-    let text;
-    try { text = await window.quip.readFile(path); }
-    catch (err) { setStatus('cannot open: ' + err.message); return; }
-    show('editor');
-    editorView.setState(EditorState.create({ doc: text, extensions: baseExtensions(path) }));
-    setDirty(false);
-    editorView.focus();
-  }
-  updateStatusRight();
-}
-
-function baseExtensions(path) {
-  return [
-    vim({ status: true }),
-    lineNumbers(),
-    drawSelection(),
-    history(),
-    highlightActiveLine(),
-    highlightActiveLineGutter(),
-    highlightSelectionMatches(),
-    bracketMatching(),
-    gruvboxHighlight,
-    gruvboxEditorTheme,
-    indentUnit.of('    '),
-    langFor(path),
-    keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap]),
-    EditorView.updateListener.of(u => { if (u.docChanged) setDirty(true); })
-  ];
-}
-
-async function saveCurrent() {
-  if (!state.file) return;
-  if (state.mode === 'notebook') { await notebook.save(); return; }
-  await window.quip.writeFile(state.file, editorView.state.doc.toString());
-  setDirty(false);
-  setStatus('saved ' + state.file.split('/').pop());
-}
-
-function closeFile() {
-  state.file = null;
-  setDirty(false);
-  show('welcome');
-  updateStatusRight();
-}
-
 // ---------- tree ----------
 const tree = new FileTree(els.tree, { onOpenFile: (p) => openFile(p), onStatus: setStatus });
 
@@ -215,8 +321,14 @@ function toggleTree() {
   state.treeVisible = !state.treeVisible;
   els.tree.classList.toggle('hidden', !state.treeVisible);
   if (state.treeVisible) tree.focus();
-  else if (state.mode === 'editor') editorView.focus();
-  else if (state.mode === 'notebook') notebook.focus();
+  else focusActive();
+}
+
+function focusActive() {
+  const p = state.active;
+  if (!p) return;
+  if (isNb(p)) notebooks.get(p)?.el.focus();
+  else editorView.focus();
 }
 
 // ---------- terminal ----------
@@ -229,14 +341,13 @@ async function toggleTerm() {
     term.resize();
     term.focus();
   } else {
-    if (state.mode === 'editor') editorView.focus();
-    else if (state.mode === 'notebook') notebook.focus();
+    if (state.active) focusActive();
     else if (state.treeVisible) tree.focus();
   }
 }
 
 // ---------- global keybinds ----------
-let leader = false; // "\" pressed, waiting for chord
+let leader = false;
 window.addEventListener('keydown', (e) => {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openFolder(); return; }
@@ -245,9 +356,10 @@ window.addEventListener('keydown', (e) => {
   if (mod && (e.key === '=' || e.key === '+')) { e.preventDefault(); window.quip.zoomBy(0.5); return; }
   if (mod && e.key === '-') { e.preventDefault(); window.quip.zoomBy(-0.5); return; }
   if (mod && e.key === '0') { e.preventDefault(); window.quip.zoomReset(); return; }
+  if (mod && e.shiftKey && (e.key === ']' || e.key === '}')) { e.preventDefault(); cycleTab(1); return; }
+  if (mod && e.shiftKey && (e.key === '[' || e.key === '{')) { e.preventDefault(); cycleTab(-1); return; }
+  if (e.key === 'Escape' && !els.cheat.classList.contains('hidden')) { e.preventDefault(); toggleCheat(false); return; }
 
-  // \e chord for the file tree — works everywhere except text inputs (vim command line),
-  // the terminal, and vim insert mode
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   const inTerm = e.target.closest?.('.xterm');
   const editorEl = e.target.closest?.('.cm-editor');
@@ -263,6 +375,7 @@ window.addEventListener('keydown', (e) => {
     openCmdline();
     return;
   }
+  // \e chord for the file tree
   if (!inTerm && !vimTyping && !mod) {
     if (leader) {
       leader = false;
@@ -273,4 +386,4 @@ window.addEventListener('keydown', (e) => {
 }, true);
 
 setStatus('');
-show('welcome');
+showOnly('welcome');

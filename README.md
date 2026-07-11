@@ -23,7 +23,9 @@ pip install jupyter-server ipykernel
 | `\` `e` | Toggle file tree |
 | `⌘J` | Toggle terminal |
 | `⌘S` / `:w` | Save |
-| `:q` | Close file |
+| `:q` | Close tab |
+| `⌘⇧]` / `⌘⇧[` | Next / previous tab |
+| `:cheat` | Keybind cheatsheet |
 
 **File tree** — arrow keys (or `hjkl`) to navigate, `→`/`Enter` to open.
 
@@ -40,6 +42,7 @@ pip install jupyter-server ipykernel
 | `Ctrl-Enter` | Run cell in place |
 | `a` / `b` | New cell above / below |
 | `dd` | Delete cell |
+| `R` / `:runall` | Run all cells |
 | `m` / `y` | To markdown / to code |
 | `gg` / `G` | First / last cell |
 
