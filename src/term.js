@@ -1,6 +1,7 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
+import { gruvboxTerm } from './theme.js';
 
 export class Term {
   constructor(el) {
@@ -10,12 +11,7 @@ export class Term {
       fontFamily: '"SF Mono", Menlo, monospace',
       fontSize: 12,
       cursorBlink: false,
-      theme: {
-        background: '#0d0d0d',
-        foreground: '#c9c7bd',
-        cursor: '#a8b78a',
-        selectionBackground: '#2a2a22'
-      }
+      theme: gruvboxTerm
     });
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);

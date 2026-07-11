@@ -3,7 +3,8 @@ import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLi
 import { EditorState, Compartment } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
-import { syntaxHighlighting, defaultHighlightStyle, indentUnit } from '@codemirror/language';
+import { indentUnit, bracketMatching } from '@codemirror/language';
+import { gruvboxHighlight, gruvboxEditorTheme } from './theme.js';
 import { vim, Vim, getCM } from '@replit/codemirror-vim';
 import { python } from '@codemirror/lang-python';
 import { javascript } from '@codemirror/lang-javascript';
@@ -133,12 +134,13 @@ function baseExtensions(path) {
     highlightActiveLine(),
     highlightActiveLineGutter(),
     highlightSelectionMatches(),
-    syntaxHighlighting(defaultHighlightStyle),
+    bracketMatching(),
+    gruvboxHighlight,
+    gruvboxEditorTheme,
     indentUnit.of('    '),
     langFor(path),
     keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap]),
-    EditorView.updateListener.of(u => { if (u.docChanged) setDirty(true); }),
-    EditorView.theme({}, { dark: true })
+    EditorView.updateListener.of(u => { if (u.docChanged) setDirty(true); })
   ];
 }
 
@@ -203,6 +205,9 @@ window.addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openFolder(); return; }
   if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveCurrent(); return; }
   if (mod && e.key.toLowerCase() === 'j') { e.preventDefault(); toggleTerm(); return; }
+  if (mod && (e.key === '=' || e.key === '+')) { e.preventDefault(); window.quip.zoomBy(0.5); return; }
+  if (mod && e.key === '-') { e.preventDefault(); window.quip.zoomBy(-0.5); return; }
+  if (mod && e.key === '0') { e.preventDefault(); window.quip.zoomReset(); return; }
 
   // \e chord for the file tree — works everywhere except the terminal and vim insert mode
   const inTerm = e.target.closest?.('.xterm');

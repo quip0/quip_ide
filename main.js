@@ -14,7 +14,7 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1280,
     height: 820,
-    backgroundColor: '#0d0d0d',
+    backgroundColor: '#1d2021',
     titleBarStyle: 'hiddenInset',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

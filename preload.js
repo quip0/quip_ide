@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
 contextBridge.exposeInMainWorld('quip', {
   openFolder: () => ipcRenderer.invoke('dialog:openFolder'),
@@ -13,5 +13,8 @@ contextBridge.exposeInMainWorld('quip', {
   onPtyData: (cb) => ipcRenderer.on('pty:data', (_e, m) => cb(m)),
   onPtyExit: (cb) => ipcRenderer.on('pty:exit', (_e, m) => cb(m)),
 
-  jupyterStart: (cwd) => ipcRenderer.invoke('jupyter:start', cwd)
+  jupyterStart: (cwd) => ipcRenderer.invoke('jupyter:start', cwd),
+
+  zoomBy: (delta) => webFrame.setZoomLevel(webFrame.getZoomLevel() + delta),
+  zoomReset: () => webFrame.setZoomLevel(0)
 });
