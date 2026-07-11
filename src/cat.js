@@ -1,28 +1,24 @@
 // A tiny ASCII cat that wanders along the bottom of the screen and sometimes sits.
 // Side-profile, drawn facing right; CSS scaleX(-1) flips it when walking left.
 const WALK = [
-  '         /\\_/\\\n' +
-  '  _.----( o.o )\n' +
-  ' ~(       __ _/\n' +
-  '   /_/`  /_/`',
+  '  ∧,,,∧\n' +
+  ' ( ̳•·• ̳)~\n' +
+  '  /   づ',
 
-  '         /\\_/\\\n' +
-  '  _.----( o.o )\n' +
-  ' ~(       __ _/\n' +
-  '   \\_\\.  \\_\\.'
+  '  ∧,,,∧\n' +
+  ' ( ̳•·• ̳)~\n' +
+  '  ノ   ヽ'
 ];
 
 const SIT =
-  '   /\\_/\\\n' +
-  '  ( -.- )\n' +
-  '   )   (~\n' +
-  '  (_,__,)';
+  '  ∧,,,∧\n' +
+  ' ( ̳-ﻌ- ̳)\n' +
+  '  づ づ~';
 
 const SIT_BLINK =
-  '   /\\_/\\\n' +
-  '  ( o.o )\n' +
-  '   )   (~\n' +
-  '  (_,__,)';
+  '  ∧,,,∧\n' +
+  ' ( ̳•ﻌ• ̳)\n' +
+  '  づ づ~';
 
 export function startCat() {
   const el = document.createElement('pre');
