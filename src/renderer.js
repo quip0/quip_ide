@@ -21,6 +21,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
   tree: $('tree'), welcome: $('welcome'), editor: $('editor'), tabs: $('tabs'),
   content: $('content'), termwrap: $('termwrap'), term: $('term'),
+  split: $('split'), splitPh: $('split-placeholder'), splitEd: $('split-editor'), splitTermEl: $('split-term'),
   statusL: $('status-left'), statusR: $('status-right'), statusM: $('status-mode'),
   cheat: $('cheat-overlay'), cheatPanel: $('cheat-panel')
 };
@@ -217,6 +218,115 @@ async function saveCurrent() {
   setStatus('saved ' + base(p));
 }
 
+// ---------- split pane ----------
+const split = { open: false, pending: false, kind: null, path: null, nb: null };
+let splitEditor = null;
+let splitTerm = null;
+
+function splitExtensions(path) {
+  return [
+    vim({ status: true }),
+    lineNumbers(),
+    drawSelection(),
+    history(),
+    highlightActiveLine(),
+    highlightActiveLineGutter(),
+    highlightSelectionMatches(),
+    bracketMatching(),
+    gruvboxHighlight,
+    gruvboxEditorTheme,
+    indentUnit.of('    '),
+    langFor(path),
+    keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap]),
+    EditorView.updateListener.of(u => { if (u.docChanged) { dirtyMap.set(path, true); renderTabs(); } })
+  ];
+}
+
+function showSplitContent(kind) {
+  els.splitPh.classList.toggle('hidden', kind !== 'placeholder');
+  els.splitEd.classList.toggle('hidden', kind !== 'file');
+  els.splitTermEl.classList.toggle('hidden', kind !== 'term');
+  if (split.nb) split.nb.el.classList.toggle('hidden', kind !== 'nb');
+}
+
+function openSplit() {
+  els.split.classList.remove('hidden');
+  split.open = true;
+  split.pending = true;
+  showSplitContent('placeholder');
+  setStatus('split: :open <file> or :term');
+  term.resize();
+}
+
+function stashSplit() {
+  if (split.kind === 'file' && split.path && splitEditor) textStates.set(split.path, splitEditor.state);
+  if (split.nb) { split.nb.el.remove(); split.nb = null; }
+}
+
+async function openInSplit(path) {
+  if (!split.open) openSplit();
+  if (isNb(path) && notebooks.has(path)) { setStatus(base(path) + ' is already open in the main pane'); return; }
+  stashSplit();
+  split.pending = false;
+  split.path = path;
+  if (isNb(path)) {
+    const el = document.createElement('div');
+    el.className = 'notebook-view';
+    el.tabIndex = 0;
+    els.split.appendChild(el);
+    const nb = new Notebook(el, { onStatus: setStatus, onDirty: (d) => { dirtyMap.set(path, d); updateStatusRight(); } });
+    split.nb = { nb, el };
+    split.kind = 'nb';
+    showSplitContent('nb');
+    try { await nb.open(path, state.folder); }
+    catch (err) { setStatus('failed to open notebook: ' + err.message); }
+  } else {
+    let cached = textStates.get(path);
+    if (!cached) {
+      let text;
+      try { text = await window.quip.readFile(path); }
+      catch (err) { setStatus('cannot open: ' + err.message); return; }
+      cached = EditorState.create({ doc: text, extensions: splitExtensions(path) });
+    }
+    if (!splitEditor) splitEditor = new EditorView({ state: cached, parent: els.splitEd });
+    else splitEditor.setState(cached);
+    split.kind = 'file';
+    showSplitContent('file');
+    splitEditor.focus();
+  }
+}
+
+async function termInSplit() {
+  if (!split.open) openSplit();
+  stashSplit();
+  split.pending = false;
+  split.kind = 'term';
+  split.path = null;
+  if (!splitTerm) splitTerm = new Term(els.splitTermEl);
+  showSplitContent('term');
+  await splitTerm.ensure(state.folder || undefined);
+  splitTerm.resize();
+  splitTerm.focus();
+}
+
+function closeSplit() {
+  if (!split.open) return;
+  stashSplit();
+  els.split.classList.add('hidden');
+  split.open = false; split.pending = false; split.kind = null; split.path = null;
+  term.resize();
+  focusActive();
+}
+
+async function saveSplit() {
+  if (split.kind === 'nb') return split.nb?.nb.save();
+  if (split.kind === 'file' && split.path && splitEditor) {
+    await window.quip.writeFile(split.path, splitEditor.state.doc.toString());
+    dirtyMap.set(split.path, false);
+    setStatus('saved ' + base(split.path));
+  }
+}
+
 // ---------- cheatsheet ----------
 const CHEAT = [
   ['GLOBAL', [
@@ -225,8 +335,11 @@ const CHEAT = [
     ['⌘⇧] / ⌘⇧[', 'next / previous tab'], [':', 'command line (works anywhere)']
   ]],
   ['COMMANDS', [
-    [':w :q :wq :x', 'save / close tab / both'], [':qa', 'quit app'],
-    [':e <path>', 'open file'], [':term', 'toggle terminal'], [':Ex', 'toggle file tree'], [':cheat', 'this cheatsheet']
+    [':w :q :wq :x', 'save / close pane or tab / both'], [':qa', 'quit app'],
+    [':open <path>', 'open file (alias :e)'], [':open -t <path>', 'open file in split'],
+    [':vsplit', 'open empty split, then :open / :term'], [':only', 'close split'],
+    [':term', 'terminal (fills a pending split, else bottom panel)'],
+    [':Ex', 'toggle file tree'], [':cheat', 'this cheatsheet']
   ]],
   ['FILE TREE', [
     ['↑↓ / j k', 'move'], ['→ / l', 'expand / open'], ['← / h', 'collapse / parent'], ['Enter', 'open']
@@ -256,33 +369,38 @@ function toggleCheat(force) {
 els.cheat.addEventListener('click', () => toggleCheat(false));
 
 // ---------- ex commands ----------
-async function runEx(line) {
+// origin: which pane the command was issued from ('main' | 'split')
+async function runEx(line, origin = 'main') {
   const [cmd, ...args] = line.trim().split(/\s+/);
   if (!cmd) return;
+  const inSplit = origin === 'split';
+  const resolve = (f) => f.startsWith('/') ? f : (state.folder ? state.folder + '/' + f : f);
   switch (cmd) {
-    case 'w': case 'write': return saveCurrent();
-    case 'q': case 'quit': return closeFile();
-    case 'wq': case 'x': case 'xit': await saveCurrent(); return closeFile();
+    case 'w': case 'write': return inSplit ? saveSplit() : saveCurrent();
+    case 'q': case 'quit': return inSplit ? closeSplit() : closeFile();
+    case 'wq': case 'x': case 'xit':
+      if (inSplit) { await saveSplit(); return closeSplit(); }
+      await saveCurrent(); return closeFile();
     case 'qa': case 'qall': return window.close();
-    case 'e': case 'edit': {
-      const f = args[0];
-      if (!f) return setStatus('E32: no file name — usage :e <path>');
-      return openFile(f.startsWith('/') ? f : (state.folder ? state.folder + '/' + f : f));
+    case 'e': case 'edit': case 'open': {
+      const toSplit = args[0] === '-t';
+      const f = toSplit ? args[1] : args[0];
+      if (!f) return setStatus(`E32: no file name — usage :${cmd} [-t] <path>`);
+      if (toSplit || split.pending || inSplit) return openInSplit(resolve(f));
+      return openFile(resolve(f));
     }
-    case 'term': case 'terminal': return toggleTerm();
+    case 'vsplit': case 'vs': return openSplit();
+    case 'only': case 'vclose': return closeSplit();
+    case 'term': case 'terminal': return (split.pending || inSplit) ? termInSplit() : toggleTerm();
     case 'Ex': case 'Explore': return toggleTree();
     case 'cheat': return toggleCheat();
-    case 'runall': return notebooks.get(state.active)?.nb.runAll();
-    case 'restart': {
-      const nb = notebooks.get(state.active)?.nb;
+    case 'runall': case 'restart': case 'restartall': {
+      const nb = (inSplit && split.kind === 'nb') ? split.nb?.nb : notebooks.get(state.active)?.nb;
       if (!nb) return setStatus('no notebook active');
-      return nb.restartKernel();
-    }
-    case 'restartall': { // restart + run all
-      const nb = notebooks.get(state.active)?.nb;
-      if (!nb) return setStatus('no notebook active');
+      if (cmd === 'runall') return nb.runAll();
       await nb.restartKernel();
-      return nb.runAll();
+      if (cmd === 'restartall') return nb.runAll();
+      return;
     }
     case 'tabn': case 'bn': return cycleTab(1);
     case 'tabp': case 'bp': return cycleTab(-1);
@@ -291,11 +409,15 @@ async function runEx(line) {
 }
 for (const [name, alias] of [
   ['write', 'w'], ['quit', 'q'], ['wq', 'wq'], ['xit', 'x'], ['qall', 'qa'],
-  ['edit', 'e'], ['terminal', 'term'], ['Explore', 'Ex'], ['cheat', 'cheat'],
+  ['edit', 'e'], ['open', 'open'], ['vsplit', 'vs'], ['only', 'only'],
+  ['terminal', 'term'], ['Explore', 'Ex'], ['cheat', 'cheat'],
   ['runall', 'runall'], ['restart', 'restart'], ['restartall', 'restartall'],
   ['tabnext', 'tabn'], ['tabprev', 'tabp']
 ]) {
-  Vim.defineEx(name, alias, (_cm, params) => runEx([alias, ...(params.args || [])].join(' ')));
+  Vim.defineEx(name, alias, (cm, params) => {
+    const origin = cm?.cm6?.dom?.closest('#split') ? 'split' : 'main';
+    runEx([alias, ...(params.args || [])].join(' '), origin);
+  });
 }
 
 // ---------- global command bar ----------
@@ -316,7 +438,12 @@ function closeCmdline() {
 }
 cmdlineInput.addEventListener('keydown', (e) => {
   e.stopPropagation();
-  if (e.key === 'Enter') { const v = cmdlineInput.value; closeCmdline(); runEx(v); }
+  if (e.key === 'Enter') {
+    const v = cmdlineInput.value;
+    const origin = cmdlineReturnFocus?.closest?.('#split') ? 'split' : 'main';
+    closeCmdline();
+    runEx(v, origin);
+  }
   else if (e.key === 'Escape') closeCmdline();
 });
 cmdlineInput.addEventListener('blur', () => cmdlineEl.classList.add('hidden'));
@@ -369,7 +496,11 @@ async function toggleTerm() {
 window.addEventListener('keydown', (e) => {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openFolder(); return; }
-  if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveCurrent(); return; }
+  if (mod && e.key.toLowerCase() === 's') {
+    e.preventDefault();
+    if (document.activeElement?.closest('#split')) saveSplit(); else saveCurrent();
+    return;
+  }
   if (mod && e.key.toLowerCase() === 'j') { e.preventDefault(); toggleTerm(); return; }
   if (mod && (e.key === '=' || e.key === '+')) { e.preventDefault(); window.quip.zoomBy(0.5); return; }
   if (mod && e.key === '-') { e.preventDefault(); window.quip.zoomBy(-0.5); return; }
