@@ -111,6 +111,7 @@ kbd {
 .cell-out:not(:empty) { border-top: 1px solid var(--border); margin-top: 4px; }
 .cell-out img { max-width: 100%; background: #fff; }
 .cell-out .err { color: var(--err); }
+.cell-out .ok { color: var(--green); opacity: 0.75; font-style: italic; }
 
 /* terminal */
 #termwrap { flex: none; height: 260px; border-top: 1px solid var(--border); padding: 4px 6px; background: var(--bg); }
