@@ -32,6 +32,7 @@ const state = {
   treeVisible: false,
   termVisible: false
 };
+let leader = false;           // '\' pressed, waiting for the chord key
 const textStates = new Map(); // path -> EditorState (preserves undo history)
 const notebooks = new Map();  // path -> { nb: Notebook, el }
 const dirtyMap = new Map();   // path -> bool
@@ -53,6 +54,7 @@ function setModeLabel(label, cls) {
   els.statusM.className = cls || '';
 }
 function refreshMode() {
+  if (leader) return setModeLabel('\\ …', 'm-passive');
   const a = document.activeElement;
   if (a?.closest('#cmdline') || a?.closest('.cm-vim-panel')) return setModeLabel('COMMAND', 'm-term');
   if (a?.closest('.xterm')) return setModeLabel('TERMINAL', 'm-term');
@@ -347,7 +349,6 @@ async function toggleTerm() {
 }
 
 // ---------- global keybinds ----------
-let leader = false;
 window.addEventListener('keydown', (e) => {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openFolder(); return; }
@@ -378,12 +379,30 @@ window.addEventListener('keydown', (e) => {
   // \e chord for the file tree
   if (!inTerm && !vimTyping && !mod) {
     if (leader) {
-      leader = false;
-      if (e.key === 'e') { e.preventDefault(); toggleTree(); return; }
+      clearLeader();
+      if (e.key === 'e') {
+        e.preventDefault(); e.stopPropagation();
+        toggleTree();
+        return;
+      }
+      // not part of the chord — fall through and let the key act normally
     }
-    if (e.key === '\\') { leader = true; e.preventDefault(); setTimeout(() => leader = false, 800); return; }
+    if (e.key === '\\') {
+      e.preventDefault(); e.stopPropagation();
+      leader = true;
+      setModeLabel('\\ …', 'm-passive');
+      leaderTimer = setTimeout(clearLeader, 1500);
+      return;
+    }
   }
 }, true);
+
+let leaderTimer = null;
+function clearLeader() {
+  leader = false;
+  clearTimeout(leaderTimer);
+  refreshMode();
+}
 
 setStatus('');
 showOnly('welcome');
