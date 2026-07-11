@@ -3,9 +3,22 @@ export class Kernel {
   constructor() {
     this.ws = null;
     this.pending = new Map(); // msg_id -> handlers
+    this.connectPromise = null;
   }
 
-  async connect(cwd) {
+  // serialize connection attempts — concurrent cell runs must share ONE kernel,
+  // otherwise each races to create its own and session state splits across them
+  connect(cwd) {
+    if (!this.connectPromise) {
+      this.connectPromise = this._connect(cwd).catch(err => {
+        this.connectPromise = null; // allow retry after a failure
+        throw err;
+      });
+    }
+    return this.connectPromise;
+  }
+
+  async _connect(cwd) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
     const info = await window.quip.jupyterStart(cwd);
     if (info.error) throw new Error(info.error);
@@ -24,7 +37,16 @@ export class Kernel {
       this.ws.onerror = () => rej(new Error('kernel websocket failed'));
     });
     this.ws.onmessage = (ev) => this.route(JSON.parse(ev.data));
-    this.ws.onclose = () => { this.ws = null; };
+    this.ws.onclose = () => {
+      this.ws = null;
+      this.connectPromise = null;
+      // fail any in-flight executions instead of hanging them
+      for (const [mid, h] of this.pending) {
+        h.onOutput('error', { ename: 'KernelDisconnected', evalue: 'kernel connection lost — rerun the cell', traceback: ['kernel connection lost — rerun the cell'] });
+        h.onDone(null);
+        this.pending.delete(mid);
+      }
+    };
   }
 
   route(msg) {
