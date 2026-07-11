@@ -31,6 +31,7 @@ function setModeLabel(label, cls) {
 }
 function refreshMode() {
   const a = document.activeElement;
+  if (a?.closest('.cm-vim-panel')) return setModeLabel('COMMAND', 'm-term');
   if (a?.closest('.xterm')) return setModeLabel('TERMINAL', 'm-term');
   if (a === els.tree || a?.closest('#tree')) return setModeLabel('FILES', 'm-passive');
   if (a === els.notebook) return setModeLabel('CELL', 'm-passive');
@@ -209,7 +210,9 @@ window.addEventListener('keydown', (e) => {
   if (mod && e.key === '-') { e.preventDefault(); window.quip.zoomBy(-0.5); return; }
   if (mod && e.key === '0') { e.preventDefault(); window.quip.zoomReset(); return; }
 
-  // \e chord for the file tree — works everywhere except the terminal and vim insert mode
+  // \e chord for the file tree — works everywhere except text inputs (vim command line),
+  // the terminal, and vim insert mode
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   const inTerm = e.target.closest?.('.xterm');
   const editorEl = e.target.closest?.('.cm-editor');
   let vimTyping = false;

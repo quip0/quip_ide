@@ -57,8 +57,16 @@ kbd {
 .cm-editor .cm-scroller { font-family: var(--mono); }
 .cm-editor.cm-focused { outline: none; }
 .cm-editor .cm-content ::selection, .cm-editor .cm-line::selection { background: #504945; }
-.cm-panels { background: var(--bg2) !important; color: var(--fg) !important; border-color: var(--border) !important; }
-.cm-vim-panel input { color: var(--fg) !important; font-family: var(--mono) !important; }
+.cm-panels { background: var(--bg2) !important; color: var(--fg) !important; border: none !important; }
+.cm-panels.cm-panels-bottom { border-top: 1px solid var(--border) !important; }
+.cm-vim-panel {
+  padding: 4px 10px !important; min-height: 24px !important; align-items: center;
+  font-family: var(--mono) !important; font-size: 14px !important; color: var(--accent) !important;
+}
+.cm-vim-panel input {
+  color: var(--accent) !important; font-family: var(--mono) !important; font-size: 14px !important;
+  caret-color: var(--accent);
+}
 
 /* notebook */
 #notebook { height: 100%; overflow-y: auto; outline: none; padding: 8px 0 40vh 0; }
