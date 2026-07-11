@@ -62,13 +62,15 @@ function refreshMode() {
   if (a?.classList?.contains('notebook-view')) return setModeLabel('CELL', 'm-passive');
   const editorEl = a?.closest('.cm-editor');
   if (editorEl) {
+    // inside a notebook cell, mark the mode so it isn't mistaken for cell-command mode
+    const inCell = editorEl.closest('.notebook-view') ? '·CELL' : '';
     const view = EditorView.findFromDOM(editorEl);
     const vs = view && getCM(view)?.state.vim;
-    if (vs?.insertMode) return setModeLabel('INSERT', 'm-insert');
+    if (vs?.insertMode) return setModeLabel('INSERT' + inCell, 'm-insert');
     if (vs?.visualMode) {
-      return setModeLabel(vs.visualBlock ? 'V-BLOCK' : vs.visualLine ? 'V-LINE' : 'VISUAL', 'm-visual');
+      return setModeLabel((vs.visualBlock ? 'V-BLOCK' : vs.visualLine ? 'V-LINE' : 'VISUAL') + inCell, 'm-visual');
     }
-    return setModeLabel('NORMAL', '');
+    return setModeLabel('NORMAL' + inCell, '');
   }
   setModeLabel('');
 }
@@ -230,7 +232,9 @@ const CHEAT = [
     ['↑↓ / j k', 'move'], ['→ / l', 'expand / open'], ['← / h', 'collapse / parent'], ['Enter', 'open']
   ]],
   ['NOTEBOOK (cell mode)', [
-    ['j / k', 'next / previous cell'], ['Enter / i', 'edit cell'], ['Esc', 'back to cell mode'],
+    ['j / k', 'next / previous cell'], ['Enter / i', 'edit cell'],
+    ['Esc', 'insert → normal → cell mode (press twice from insert)'],
+    ['⇧Esc', 'exit cell from any mode'],
     ['⇧Enter', 'run + advance'], ['^Enter', 'run in place'], ['R', 'run all cells'],
     ['a / b', 'new cell above / below'], ['dd', 'delete cell'], ['m / y', 'markdown / code'],
     [':restart', 'restart kernel'], [':restartall', 'restart kernel + run all'],
