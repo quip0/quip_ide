@@ -16,6 +16,8 @@ import { rust } from '@codemirror/lang-rust';
 import { FileTree } from './tree.js';
 import { Term } from './term.js';
 import { Notebook } from './notebook.js';
+import { startCat } from './cat.js';
+import { THEMES, DEFAULT_THEME, applyThemeVars, termThemeOf, activeThemeName } from './themes.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -385,7 +387,8 @@ const CHEAT = [
     [':open <path>', 'open file (alias :e)'], [':open -t <path>', 'open file in split'],
     [':vsplit', 'open empty split, then :open / :term'], [':only', 'close split'],
     [':term', 'terminal (fills a pending split, else bottom panel)'],
-    [':Ex', 'toggle file tree'], [':cheat', 'this cheatsheet']
+    [':Ex', 'toggle file tree'], [':cheat', 'this cheatsheet'],
+    [':theme <name>', 'switch theme (bare :theme lists all)']
   ]],
   ['FILE TREE', [
     ['↑↓ / j k', 'move'], ['→ / l', 'expand / open'], ['← / h', 'collapse / parent'], ['Enter', 'open']
@@ -440,6 +443,11 @@ async function runEx(line, origin = 'main') {
     case 'term': case 'terminal': return (split.pending || inSplit) ? termInSplit() : toggleTerm();
     case 'Ex': case 'Explore': return toggleTree();
     case 'cheat': return toggleCheat();
+    case 'theme': {
+      const name = args[0];
+      if (!name) return setStatus(`theme: ${activeThemeName()} — available: ${Object.keys(THEMES).join(', ')}`);
+      return applyTheme(name);
+    }
     case 'runall': case 'restart': case 'restartall': {
       const nb = (inSplit && split.kind === 'nb') ? split.nb?.nb : notebooks.get(state.active)?.nb;
       if (!nb) return setStatus('no notebook active');
@@ -456,7 +464,7 @@ async function runEx(line, origin = 'main') {
 for (const [name, alias] of [
   ['write', 'w'], ['quit', 'q'], ['wq', 'wq'], ['xit', 'x'], ['qall', 'qa'],
   ['edit', 'e'], ['open', 'open'], ['vsplit', 'vs'], ['only', 'only'],
-  ['terminal', 'term'], ['Explore', 'Ex'], ['cheat', 'cheat'],
+  ['terminal', 'term'], ['Explore', 'Ex'], ['cheat', 'cheat'], ['theme', 'theme'],
   ['runall', 'runall'], ['restart', 'restart'], ['restartall', 'restartall'],
   ['tabnext', 'tabn'], ['tabprev', 'tabp']
 ]) {
@@ -493,6 +501,19 @@ cmdlineInput.addEventListener('keydown', (e) => {
   else if (e.key === 'Escape') closeCmdline();
 });
 cmdlineInput.addEventListener('blur', () => cmdlineEl.classList.add('hidden'));
+
+// ---------- themes ----------
+function applyTheme(name) {
+  const t = applyThemeVars(name);
+  if (!t) { setStatus(`unknown theme: ${name} — :theme to list`); return; }
+  const tt = termThemeOf(t);
+  term?.setTheme(tt);
+  splitTerm?.setTheme(tt);
+  localStorage.setItem('quip-theme', name);
+  setStatus('theme: ' + name);
+}
+applyThemeVars(localStorage.getItem('quip-theme') && THEMES[localStorage.getItem('quip-theme')]
+  ? localStorage.getItem('quip-theme') : DEFAULT_THEME);
 
 // ---------- tree ----------
 const tree = new FileTree(els.tree, { onOpenFile: (p) => openFile(p), onStatus: setStatus });
@@ -605,3 +626,4 @@ function clearLeader() {
 
 setStatus('');
 showOnly('welcome');
+startCat();

@@ -47,6 +47,7 @@ That's it — a window opens; hit `⌘O` to open a folder. Everything but notebo
 | `:q` | Close tab |
 | `⌘⇧]` / `⌘⇧[` | Next / previous tab |
 | `:cheat` | Keybind cheatsheet |
+| `:theme <name>` | Switch theme (bare `:theme` lists all 16; choice persists) |
 
 **File tree** — arrow keys (or `hjkl`) to navigate, `→`/`Enter` to open.
 
