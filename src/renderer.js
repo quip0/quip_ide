@@ -309,6 +309,19 @@ async function termInSplit() {
   splitTerm.focus();
 }
 
+function focusSplitContent() {
+  if (split.kind === 'file') splitEditor?.focus();
+  else if (split.kind === 'term') splitTerm?.focus();
+  else if (split.kind === 'nb') split.nb?.el.focus();
+  else setStatus('split is empty — :open <file> or :term');
+}
+
+function switchPane() {
+  if (!split.open) { setStatus('no split — :vsplit first'); return; }
+  if (document.activeElement?.closest('#split')) focusActive();
+  else focusSplitContent();
+}
+
 function closeSplit() {
   if (!split.open) return;
   stashSplit();
@@ -330,7 +343,7 @@ async function saveSplit() {
 // ---------- cheatsheet ----------
 const CHEAT = [
   ['GLOBAL', [
-    ['⌘O', 'open folder'], ['\\ e', 'toggle file tree'], ['⌘J', 'toggle terminal'],
+    ['⌘O', 'open folder'], ['\\ e', 'toggle file tree'], ['\\ w', 'switch pane focus (split)'], ['⌘J', 'toggle terminal'],
     ['⌘S', 'save'], ['⌘+ / ⌘− / ⌘0', 'zoom in / out / reset'],
     ['⌘⇧] / ⌘⇧[', 'next / previous tab'], [':', 'command line (works anywhere)']
   ]],
@@ -531,6 +544,11 @@ window.addEventListener('keydown', (e) => {
       if (e.key === 'e') {
         e.preventDefault(); e.stopPropagation();
         toggleTree();
+        return;
+      }
+      if (e.key === 'w') {
+        e.preventDefault(); e.stopPropagation();
+        switchPane();
         return;
       }
       // not part of the chord — fall through and let the key act normally

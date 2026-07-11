@@ -39,6 +39,9 @@ That's it — a window opens; hit `⌘O` to open a folder. Everything but notebo
 | --- | --- |
 | `⌘O` | Open folder (file picker) |
 | `\` `e` | Toggle file tree |
+| `\` `w` | Switch focus between split panes |
+| `:open [-t] <path>` | Open file (in split with `-t`) |
+| `:vsplit` / `:only` | Open / close split pane |
 | `⌘J` | Toggle terminal |
 | `⌘S` / `:w` | Save |
 | `:q` | Close tab |
