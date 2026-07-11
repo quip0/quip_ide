@@ -233,6 +233,7 @@ const CHEAT = [
     ['j / k', 'next / previous cell'], ['Enter / i', 'edit cell'], ['Esc', 'back to cell mode'],
     ['⇧Enter', 'run + advance'], ['^Enter', 'run in place'], ['R', 'run all cells'],
     ['a / b', 'new cell above / below'], ['dd', 'delete cell'], ['m / y', 'markdown / code'],
+    [':restart', 'restart kernel'], [':restartall', 'restart kernel + run all'],
     ['gg / G', 'first / last cell']
   ]],
   ['EDITOR', [['(vim)', 'full vim keybindings via codemirror-vim']]]
@@ -268,6 +269,17 @@ async function runEx(line) {
     case 'Ex': case 'Explore': return toggleTree();
     case 'cheat': return toggleCheat();
     case 'runall': return notebooks.get(state.active)?.nb.runAll();
+    case 'restart': {
+      const nb = notebooks.get(state.active)?.nb;
+      if (!nb) return setStatus('no notebook active');
+      return nb.restartKernel();
+    }
+    case 'restartall': { // restart + run all
+      const nb = notebooks.get(state.active)?.nb;
+      if (!nb) return setStatus('no notebook active');
+      await nb.restartKernel();
+      return nb.runAll();
+    }
     case 'tabn': case 'bn': return cycleTab(1);
     case 'tabp': case 'bp': return cycleTab(-1);
     default: setStatus(`E492: not an editor command: ${cmd}`);
@@ -276,7 +288,8 @@ async function runEx(line) {
 for (const [name, alias] of [
   ['write', 'w'], ['quit', 'q'], ['wq', 'wq'], ['xit', 'x'], ['qall', 'qa'],
   ['edit', 'e'], ['terminal', 'term'], ['Explore', 'Ex'], ['cheat', 'cheat'],
-  ['runall', 'runall'], ['tabnext', 'tabn'], ['tabprev', 'tabp']
+  ['runall', 'runall'], ['restart', 'restart'], ['restartall', 'restartall'],
+  ['tabnext', 'tabn'], ['tabprev', 'tabp']
 ]) {
   Vim.defineEx(name, alias, (_cm, params) => runEx([alias, ...(params.args || [])].join(' ')));
 }

@@ -43,6 +43,8 @@ pip install jupyter-server ipykernel
 | `a` / `b` | New cell above / below |
 | `dd` | Delete cell |
 | `R` / `:runall` | Run all cells |
+| `:restart` | Restart kernel (clears state) |
+| `:restartall` | Restart kernel, then run all |
 | `m` / `y` | To markdown / to code |
 | `gg` / `G` | First / last cell |
 

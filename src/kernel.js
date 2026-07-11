@@ -30,6 +30,7 @@ export class Kernel {
     });
     if (!r.ok) throw new Error('kernel start failed: ' + await r.text());
     const k = await r.json();
+    this.url = url; this.token = token; this.kernelId = k.id;
     const wsUrl = url.replace('http', 'ws') + `/api/kernels/${k.id}/channels?token=${token}`;
     this.ws = new WebSocket(wsUrl);
     await new Promise((res, rej) => {
@@ -66,6 +67,17 @@ export class Kernel {
     if (h.replied && h.idle) {
       this.pending.delete(parent);
       h.onDone(h.count);
+    }
+  }
+
+  // full teardown — the next execute() connects to a brand-new kernel
+  async restart() {
+    if (this.ws) { this.ws.onclose = null; this.ws.close(); this.ws = null; }
+    this.connectPromise = null;
+    this.pending.clear();
+    if (this.kernelId) {
+      try { await fetch(`${this.url}/api/kernels/${this.kernelId}?token=${this.token}`, { method: 'DELETE' }); } catch {}
+      this.kernelId = null;
     }
   }
 
