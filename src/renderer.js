@@ -17,6 +17,8 @@ import { FileTree } from './tree.js';
 import { Term } from './term.js';
 import { Notebook } from './notebook.js';
 import { startCat } from './cat.js';
+import { Calendar } from './cal.js';
+import { startAgentMeter } from './agentmeter.js';
 import { THEMES, DEFAULT_THEME, applyThemeVars, termThemeOf, activeThemeName } from './themes.js';
 
 const $ = (id) => document.getElementById(id);
@@ -24,7 +26,7 @@ const els = {
   tree: $('tree'), welcome: $('welcome'), editor: $('editor'), tabs: $('tabs'),
   content: $('content'), termwrap: $('termwrap'), term: $('term'),
   split: $('split'), splitPh: $('split-placeholder'), splitEd: $('split-editor'), splitTermEl: $('split-term'),
-  statusL: $('status-left'), statusR: $('status-right'), statusM: $('status-mode'),
+  statusL: $('status-left'), statusR: $('status-right'), statusM: $('status-mode'), statusP: $('status-project'),
   cheat: $('cheat-overlay'), cheatPanel: $('cheat-panel')
 };
 
@@ -44,7 +46,128 @@ const dirtyMap = new Map();   // path -> bool
 const isNb = (p) => p.endsWith('.ipynb');
 const base = (p) => p.split('/').pop();
 
+// ---------- projects ----------
+// Each opened folder is a project with its own tabs, tree root and terminals.
+// Terminals (ptys) and notebook kernels belong to the project and KEEP RUNNING
+// while another project is in the foreground — only their DOM is hidden.
+const projects = []; // [{ name, folder, tabs, active, treeVisible, termVisible, term, termEl, splitTerm, splitTermEl }]
+let curProj = -1;
+const curP = () => projects[curProj] || null;
+
+function makeProject(folder) {
+  const termEl = document.createElement('div');
+  termEl.className = 'term-inst hidden';
+  els.term.appendChild(termEl);
+  const splitTermEl = document.createElement('div');
+  splitTermEl.className = 'term-inst hidden';
+  els.splitTermEl.appendChild(splitTermEl);
+  return {
+    folder, name: folder ? base(folder) : '~',
+    tabs: [], active: null, treeVisible: !!folder, termVisible: false,
+    term: null, termEl, splitTerm: null, splitTermEl
+  };
+}
+
+function mainTerm() {
+  const p = curP();
+  if (!p) return null;
+  if (!p.term) p.term = new Term(p.termEl);
+  return p.term;
+}
+
+function updateStatusProject() {
+  const p = curP();
+  els.statusP.textContent = p ? (projects.length > 1 ? `${curProj + 1}·${p.name}` : p.name) : '';
+}
+
+function snapshotCurrent() {
+  const p = curP();
+  if (!p) return;
+  stashActive();
+  p.tabs = state.tabs;
+  p.active = state.active;
+  p.treeVisible = state.treeVisible;
+  p.termVisible = state.termVisible;
+}
+
+async function switchProject(i) {
+  const p = projects[i];
+  if (!p || i === curProj) return;
+  snapshotCurrent();
+  if (split.open) closeSplit(); // pane content is stashed; project terms survive
+  curProj = i;
+  state.folder = p.folder;
+  state.tabs = p.tabs;
+  state.active = null;
+  state.treeVisible = p.treeVisible;
+  state.termVisible = p.termVisible;
+  if (p.folder) await tree.setRoot(p.folder);
+  els.tree.classList.toggle('hidden', !p.treeVisible);
+  for (const q of projects) q.termEl.classList.toggle('hidden', q !== p);
+  els.termwrap.classList.toggle('hidden', !p.termVisible);
+  if (p.termVisible && p.term) p.term.resize();
+  if (p.active) await activate(p.active);
+  else { showOnly('welcome'); renderTabs(); updateStatusRight(); }
+  updateStatusProject();
+  setStatus(p.folder || '');
+}
+
+function cycleProject() {
+  if (projects.length < 2) { setStatus('only one project open — ⌘O to add another'); return; }
+  switchProject((curProj + 1) % projects.length);
+}
+
+function listProjects() {
+  if (!projects.length) return setStatus('no projects — ⌘O to open a folder');
+  setStatus(projects.map((p, i) => `${i === curProj ? '<b>' : ''}${i + 1}:${p.name}${i === curProj ? '</b>' : ''}`).join('&nbsp;&nbsp;'));
+}
+
+function closeProject() {
+  const p = curP();
+  if (!p) return setStatus('no project open');
+  confirmStatus(`close project ${p.name}?`, () => doCloseProject(curProj));
+}
+
+async function doCloseProject(i) {
+  const p = projects[i];
+  snapshotCurrent();
+  if (split.open) closeSplit();
+  for (const t of p.tabs) {
+    textStates.delete(t.path);
+    dirtyMap.delete(t.path);
+    const nb = notebooks.get(t.path);
+    if (nb) { nb.nb.restartKernel(); nb.el.remove(); notebooks.delete(t.path); }
+  }
+  if (p.term?.id) window.quip.ptyKill(p.term.id);
+  if (p.splitTerm?.id) window.quip.ptyKill(p.splitTerm.id);
+  p.termEl.remove();
+  p.splitTermEl.remove();
+  projects.splice(i, 1);
+  curProj = -1;
+  if (projects.length) return switchProject(Math.min(i, projects.length - 1));
+  state.folder = null; state.tabs = []; state.active = null;
+  state.treeVisible = false; state.termVisible = false;
+  els.tree.classList.add('hidden');
+  els.termwrap.classList.add('hidden');
+  showOnly('welcome'); renderTabs(); updateStatusRight(); updateStatusProject();
+  setStatus(`closed ${p.name} — ⌘O to open a folder`);
+}
+
 function setStatus(left) { els.statusL.innerHTML = left || ''; }
+
+// status-bar confirmation: swallows keys until y (confirm) or n/Esc (cancel)
+function confirmStatus(msg, onYes) {
+  setStatus(`${msg} &nbsp;<b>y</b> yes · <b>n</b> no`);
+  const onKey = (e) => {
+    if (e.key === 'Shift' || e.key === 'Meta' || e.key === 'Control' || e.key === 'Alt') return;
+    e.preventDefault(); e.stopPropagation();
+    if (e.key !== 'y' && e.key !== 'n' && e.key !== 'Escape') return;
+    window.removeEventListener('keydown', onKey, true);
+    if (e.key === 'y') onYes();
+    else setStatus('cancelled');
+  };
+  window.addEventListener('keydown', onKey, true);
+}
 function updateStatusRight() {
   const p = state.active;
   const name = p ? (state.folder && p.startsWith(state.folder + '/') ? p.slice(state.folder.length + 1) : p) : '';
@@ -64,6 +187,7 @@ function refreshMode() {
   if (a?.closest('#cmdline') || a?.closest('.cm-vim-panel')) return setModeLabel('COMMAND', 'm-term');
   if (a?.closest('.xterm')) return setModeLabel('TERMINAL', 'm-term');
   if (a === els.tree || a?.closest('#tree')) return setModeLabel('FILES', 'm-passive');
+  if (a?.closest('#cal-panel')) return setModeLabel('CALENDAR', 'm-passive');
   if (a?.classList?.contains('notebook-view')) return setModeLabel('CELL', 'm-passive');
   const editorEl = a?.closest('.cm-editor');
   if (editorEl) {
@@ -224,7 +348,6 @@ async function saveCurrent() {
 
 // ---------- split pane ----------
 let splitEditor = null;
-let splitTerm = null;
 
 function splitExtensions(path) {
   return [
@@ -259,7 +382,7 @@ function openSplit() {
   split.pending = true;
   showSplitContent('placeholder');
   setStatus('split: :open <file> or :term');
-  term.resize();
+  curP()?.term?.resize();
 }
 
 function stashSplit() {
@@ -301,21 +424,24 @@ async function openInSplit(path) {
 }
 
 async function termInSplit() {
+  const p = curP();
+  if (!p) { setStatus('open a folder first (⌘O)'); return; }
   if (!split.open) openSplit();
   stashSplit();
   split.pending = false;
   split.kind = 'term';
   split.path = null;
-  if (!splitTerm) splitTerm = new Term(els.splitTermEl);
+  if (!p.splitTerm) p.splitTerm = new Term(p.splitTermEl);
+  for (const q of projects) q.splitTermEl.classList.toggle('hidden', q !== p);
   showSplitContent('term');
-  await splitTerm.ensure(state.folder || undefined);
-  splitTerm.resize();
-  splitTerm.focus();
+  await p.splitTerm.ensure(state.folder || undefined);
+  p.splitTerm.resize();
+  p.splitTerm.focus();
 }
 
 function focusSplitContent() {
   if (split.kind === 'file') splitEditor?.focus();
-  else if (split.kind === 'term') splitTerm?.focus();
+  else if (split.kind === 'term') curP()?.splitTerm?.focus();
   else if (split.kind === 'nb') split.nb?.el.focus();
   else setStatus('split is empty — :open <file> or :term');
 }
@@ -334,7 +460,7 @@ function closeSplit() {
   els.split.style.width = ''; els.split.style.flex = '';
   updatePaneFocus();
   split.open = false; split.pending = false; split.kind = null; split.path = null;
-  term.resize();
+  curP()?.term?.resize();
   focusActive();
 }
 
@@ -382,12 +508,18 @@ const CHEAT = [
     ['⌘S', 'save'], ['⌘+ / ⌘− / ⌘0', 'zoom in / out / reset'],
     ['⌘⇧] / ⌘⇧[', 'next / previous tab'], [':', 'command line (works anywhere)']
   ]],
+  ['PROJECTS', [
+    ['⌘O', 'open folder as a new project (existing folder → switch to it)'],
+    ['⌘1–9', 'switch to project n'], ['\\ p', 'cycle projects'],
+    [':proj', 'list projects'], [':proj <n|name>', 'switch project'], [':pq', 'close project (asks y/n)'],
+    ['', 'terminals & notebook kernels keep running in background projects']
+  ]],
   ['COMMANDS', [
     [':w :q :wq :x', 'save / close pane or tab / both'], [':qa', 'quit app'],
     [':open <path>', 'open file (alias :e)'], [':open -t <path>', 'open file in split'],
     [':vsplit', 'open empty split, then :open / :term'], [':only', 'close split'],
     [':term', 'terminal (fills a pending split, else bottom panel)'],
-    [':Ex', 'toggle file tree'], [':cheat', 'this cheatsheet'],
+    [':Ex', 'toggle file tree'], [':cheat', 'this cheatsheet'], [':cal', 'toggle calendar'],
     [':theme <name>', 'switch theme (bare :theme lists all)']
   ]],
   ['FILE TREE', [
@@ -401,6 +533,12 @@ const CHEAT = [
     ['a / b', 'new cell above / below'], ['dd', 'delete cell'], ['m / y', 'markdown / code'],
     [':restart', 'restart kernel'], [':restartall', 'restart kernel + run all'],
     ['gg / G', 'first / last cell']
+  ]],
+  ['CALENDAR (:cal)', [
+    ['h j k l / arrows', 'move day (j/k = week)'], ['H / L (or [ ])', 'previous / next month'],
+    ['t', 'jump to today'], ['a / i / Enter', 'append event to selected day'],
+    ['Tab / ⇧Tab', 'cycle events within the day'], ['dd / x', 'delete selected event'],
+    ['Esc / q', 'close calendar']
   ]],
   ['EDITOR', [['(vim)', 'full vim keybindings via codemirror-vim']]]
 ];
@@ -416,6 +554,9 @@ function toggleCheat(force) {
   }
 }
 els.cheat.addEventListener('click', () => toggleCheat(false));
+
+// ---------- calendar ----------
+const calendar = new Calendar(document.body, { onStatus: setStatus });
 
 // ---------- ex commands ----------
 // origin: which pane the command was issued from ('main' | 'split')
@@ -443,6 +584,7 @@ async function runEx(line, origin = 'main') {
     case 'term': case 'terminal': return (split.pending || inSplit) ? termInSplit() : toggleTerm();
     case 'Ex': case 'Explore': return toggleTree();
     case 'cheat': return toggleCheat();
+    case 'cal': case 'calendar': return calendar.toggle();
     case 'theme': {
       const name = args[0];
       if (!name) return setStatus(`theme: ${activeThemeName()} — available: ${Object.keys(THEMES).join(', ')}`);
@@ -458,6 +600,15 @@ async function runEx(line, origin = 'main') {
     }
     case 'tabn': case 'bn': return cycleTab(1);
     case 'tabp': case 'bp': return cycleTab(-1);
+    case 'proj': case 'project': case 'projects': {
+      const a = args[0];
+      if (!a) return listProjects();
+      const n = parseInt(a, 10);
+      const idx = Number.isNaN(n) ? projects.findIndex(p => p.name === a) : n - 1;
+      if (!projects[idx]) return setStatus(`no such project: ${a} — :proj to list`);
+      return switchProject(idx);
+    }
+    case 'pq': case 'pquit': return closeProject();
     default: setStatus(`E492: not an editor command: ${cmd}`);
   }
 }
@@ -465,6 +616,7 @@ for (const [name, alias] of [
   ['write', 'w'], ['quit', 'q'], ['wq', 'wq'], ['xit', 'x'], ['qall', 'qa'],
   ['edit', 'e'], ['open', 'open'], ['vsplit', 'vs'], ['only', 'only'],
   ['terminal', 'term'], ['Explore', 'Ex'], ['cheat', 'cheat'], ['theme', 'theme'],
+  ['calendar', 'cal'], ['project', 'proj'], ['pquit', 'pq'],
   ['runall', 'runall'], ['restart', 'restart'], ['restartall', 'restartall'],
   ['tabnext', 'tabn'], ['tabprev', 'tabp']
 ]) {
@@ -507,8 +659,7 @@ function applyTheme(name) {
   const t = applyThemeVars(name);
   if (!t) { setStatus(`unknown theme: ${name} — :theme to list`); return; }
   const tt = termThemeOf(t);
-  term?.setTheme(tt);
-  splitTerm?.setTheme(tt);
+  for (const p of projects) { p.term?.setTheme(tt); p.splitTerm?.setTheme(tt); }
   localStorage.setItem('quip-theme', name);
   setStatus('theme: ' + name);
 }
@@ -521,12 +672,11 @@ const tree = new FileTree(els.tree, { onOpenFile: (p) => openFile(p), onStatus: 
 async function openFolder() {
   const dir = await window.quip.openFolder();
   if (!dir) return;
-  state.folder = dir;
-  await tree.setRoot(dir);
-  state.treeVisible = true;
-  els.tree.classList.remove('hidden');
+  const existing = projects.findIndex(p => p.folder === dir);
+  if (existing >= 0) return switchProject(existing);
+  projects.push(makeProject(dir));
+  await switchProject(projects.length - 1);
   tree.focus();
-  setStatus(dir);
 }
 
 function toggleTree() {
@@ -545,14 +695,23 @@ function focusActive() {
 }
 
 // ---------- terminal ----------
-const term = new Term(els.term);
 async function toggleTerm() {
+  // terminal with nothing open yet gets an implicit home project
+  if (!curP()) {
+    projects.push(makeProject(null));
+    curProj = projects.length - 1;
+    updateStatusProject();
+  }
+  const p = curP();
   state.termVisible = !state.termVisible;
+  p.termVisible = state.termVisible;
   els.termwrap.classList.toggle('hidden', !state.termVisible);
   if (state.termVisible) {
-    await term.ensure(state.folder || undefined);
-    term.resize();
-    term.focus();
+    for (const q of projects) q.termEl.classList.toggle('hidden', q !== p);
+    const t = mainTerm();
+    await t.ensure(state.folder || undefined);
+    t.resize();
+    t.focus();
   } else {
     if (state.active) focusActive();
     else if (state.treeVisible) tree.focus();
@@ -574,6 +733,10 @@ window.addEventListener('keydown', (e) => {
   if (mod && e.key === '0') { e.preventDefault(); window.quip.zoomReset(); return; }
   if (mod && e.shiftKey && (e.key === ']' || e.key === '}')) { e.preventDefault(); cycleTab(1); return; }
   if (mod && e.shiftKey && (e.key === '[' || e.key === '{')) { e.preventDefault(); cycleTab(-1); return; }
+  if (mod && !e.shiftKey && !e.altKey && e.key >= '1' && e.key <= '9') {
+    if (projects[+e.key - 1]) { e.preventDefault(); switchProject(+e.key - 1); }
+    return;
+  }
   if (e.key === 'Escape' && !els.cheat.classList.contains('hidden')) { e.preventDefault(); toggleCheat(false); return; }
 
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -605,6 +768,11 @@ window.addEventListener('keydown', (e) => {
         switchPane();
         return;
       }
+      if (e.key === 'p') {
+        e.preventDefault(); e.stopPropagation();
+        cycleProject();
+        return;
+      }
       // not part of the chord — fall through and let the key act normally
     }
     if (e.key === '\\') {
@@ -627,3 +795,4 @@ function clearLeader() {
 setStatus('');
 showOnly('welcome');
 startCat();
+startAgentMeter();

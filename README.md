@@ -47,6 +47,7 @@ That's it — a window opens; hit `⌘O` to open a folder. Everything but notebo
 | `:q` | Close tab |
 | `⌘⇧]` / `⌘⇧[` | Next / previous tab |
 | `:cheat` | Keybind cheatsheet |
+| `:cal` | Toggle calendar |
 | `:theme <name>` | Switch theme (bare `:theme` lists all 16; choice persists) |
 
 **File tree** — arrow keys (or `hjkl`) to navigate, `→`/`Enter` to open.
@@ -71,3 +72,15 @@ That's it — a window opens; hit `⌘O` to open a folder. Everything but notebo
 | `gg` / `G` | First / last cell |
 
 The first cell you run starts a local Jupyter server + python3 kernel automatically.
+
+**Calendar (`:cal`)** — keyboard-driven month calendar overlay; events persist locally:
+
+| Key | Action |
+| --- | --- |
+| `h j k l` / arrows | Move day (`j`/`k` move by week) |
+| `H` / `L` (or `[` / `]`) | Previous / next month |
+| `t` | Jump to today |
+| `a` / `i` / `Enter` | Append event to the selected day |
+| `Tab` / `⇧Tab` | Cycle events within the day |
+| `dd` / `x` | Delete selected event |
+| `Esc` / `q` | Close calendar |

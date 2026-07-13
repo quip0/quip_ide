@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('quip', {
   onPtyExit: (cb) => ipcRenderer.on('pty:exit', (_e, m) => cb(m)),
 
   jupyterStart: (cwd) => ipcRenderer.invoke('jupyter:start', cwd),
+  agentStats: () => ipcRenderer.invoke('agent:stats'),
 
   zoomBy: (delta) => webFrame.setZoomLevel(webFrame.getZoomLevel() + delta),
   zoomReset: () => webFrame.setZoomLevel(0)
