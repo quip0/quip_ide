@@ -31,25 +31,31 @@ body { background: var(--bg); color: var(--fg); font-family: var(--mono); font-s
 #panes { flex: 1; min-height: 0; display: flex; }
 #content { flex: 1; min-width: 0; position: relative; }
 
-/* split pane */
-#pane-divider {
-  flex: none; width: 5px; cursor: col-resize; background: var(--border);
-  background-clip: content-box; padding: 0 2px;
+/* pane splits — unlimited, nestable (:vsplit / :split); each project keeps
+   its own tree, hidden (never torn down) while the project is backgrounded */
+.pane-root { flex: 1; min-width: 0; min-height: 0; display: flex; }
+.pane-box { flex: 1; min-width: 0; min-height: 0; display: flex; }
+.pane-box.row { flex-direction: row; }
+.pane-box.col { flex-direction: column; }
+.pane-leaf {
+  flex: 1; min-width: 0; min-height: 0; position: relative;
+  display: flex; flex-direction: column; outline: none;
 }
-#pane-divider:hover, #pane-divider.dragging { background: var(--dim); background-clip: content-box; }
-#split { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.pane-leaf > * { flex: 1; min-height: 0; min-width: 0; }
+.pane-divider { flex: none; background: var(--border); background-clip: content-box; }
+.pane-divider.v { width: 5px; cursor: col-resize; padding: 0 2px; }
+.pane-divider.h { height: 5px; cursor: row-resize; padding: 2px 0; }
+.pane-divider:hover, .pane-divider.dragging { background: var(--dim); background-clip: content-box; }
+.pane-ph { display: flex; align-items: center; justify-content: center; color: var(--dim); user-select: none; }
+.pane-term { padding: 4px 6px; }
+.pane-leaf .notebook-view { flex: 1; min-height: 0; }
 
-/* focused-pane indicator (only meaningful while a split is open) —
+/* focused-pane indicator (only meaningful with >1 pane) —
    drawn as an overlay so pane content can't paint over it */
-#split { position: relative; }
-#content.pane-focused::after, #split.pane-focused::after {
+.pane-leaf.pane-focused::after {
   content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 10;
   box-shadow: inset 0 0 0 1px var(--accent);
 }
-#split > div { flex: 1; min-height: 0; }
-#split-placeholder { display: flex; align-items: center; justify-content: center; color: var(--dim); user-select: none; }
-#split-term { padding: 4px 6px; }
-#split .notebook-view { flex: 1; min-height: 0; }
 
 /* tabs */
 #tabs {
@@ -95,6 +101,15 @@ kbd {
 .cm-editor .cm-scroller { font-family: var(--mono); }
 .cm-editor.cm-focused { outline: none; }
 .cm-editor .cm-content ::selection, .cm-editor .cm-line::selection { background: var(--bg3); }
+/* git gutter: uncommitted work marked on the line numbers
+   (green = added, yellow = changed, red wedge = lines deleted here) */
+.cm-gutterElement.cm-git-add, .cm-gutterElement.cm-git-mod, .cm-gutterElement.cm-git-del {
+  background-repeat: no-repeat; background-position: left center;
+}
+.cm-gutterElement.cm-git-add { background-image: linear-gradient(var(--green), var(--green)); background-size: 2px 100%; }
+.cm-gutterElement.cm-git-mod { background-image: linear-gradient(var(--yellow), var(--yellow)); background-size: 2px 100%; }
+.cm-gutterElement.cm-git-del { background-image: linear-gradient(var(--red), var(--red)); background-size: 2px 45%; background-position: left top; }
+
 .cm-panels { background: var(--bg2) !important; color: var(--fg) !important; border: none !important; }
 .cm-panels.cm-panels-bottom { border-top: 1px solid var(--border) !important; }
 .cm-vim-panel {
@@ -174,6 +189,42 @@ kbd {
 #cheat-panel .close-hint { margin-top: 12px; color: var(--dim); }
 
 /* calendar */
+/* git history (:tree) */
+#gt-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+}
+#gt-panel {
+  display: flex; flex-direction: column; outline: none;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 14px 18px; width: min(1000px, 92vw); height: min(700px, 86vh);
+}
+#gt-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; user-select: none; }
+#gt-title { color: var(--accent); font-size: 15px; letter-spacing: 1px; }
+#gt-hint { color: var(--dim); font-size: 11px; }
+#gt-list { flex: 1; min-height: 0; overflow-y: auto; border-top: 1px solid var(--border); padding-top: 4px; }
+.gt-empty { color: var(--dim); padding: 12px 4px; }
+.gt-row {
+  display: flex; gap: 8px; align-items: baseline; white-space: nowrap;
+  padding: 1px 4px; font-size: 12px; cursor: default; border-radius: 2px;
+}
+.gt-row.sel { background: var(--sel); }
+.gt-row.gt-link { height: 8px; }
+.gt-graph { color: var(--blue); white-space: pre; flex: none; }
+.gt-graph.head { color: var(--accent); }
+.gt-hash { color: var(--orange); flex: none; }
+.gt-subj { color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
+.gt-subj.wt { color: var(--yellow); }
+.gt-refs { color: var(--aqua); flex: none; }
+.gt-meta { color: var(--dim); margin-left: auto; padding-left: 12px; flex: none; }
+.gt-st { white-space: pre; flex: none; color: var(--dim); }
+.gt-st.st-A, .gt-st.st-\? { color: var(--green); }
+.gt-st.st-M { color: var(--yellow); }
+.gt-st.st-D { color: var(--red); }
+.gt-st.st-R { color: var(--purple); }
+.gt-file { color: var(--fg2); overflow: hidden; text-overflow: ellipsis; }
+.gt-file.dim { color: var(--dim); }
+
 #cal-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 50;
   display: flex; align-items: center; justify-content: center;
@@ -247,21 +298,3 @@ kbd {
 #status-mode.m-term { background: var(--purple); }
 #status-mode.m-passive { background: var(--sel); color: var(--dim); font-weight: 400; }
 #status .dirty { color: var(--err); }
-
-/* AI agent context / usage meters */
-#status-agent { display: flex; align-items: center; gap: 12px; }
-#agent-name {
-  padding: 1px 8px; border-radius: 2px; background: var(--sel);
-  color: var(--aqua); font-weight: 700; letter-spacing: 1px;
-}
-#status-agent .am-group { display: flex; align-items: center; gap: 5px; }
-#status-agent .am-bar {
-  display: inline-block; width: 64px; height: 7px; border-radius: 2px;
-  background: var(--bg3); overflow: hidden;
-}
-#status-agent .am-bar > span {
-  display: block; height: 100%; width: 0; background: var(--green);
-  transition: width 0.6s ease;
-}
-#status-agent .am-bar > span.warn { background: var(--orange); }
-#status-agent .am-bar > span.hot { background: var(--err); }

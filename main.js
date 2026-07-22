@@ -2,7 +2,7 @@ const { app, BrowserWindow, dialog, ipcMain, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const crypto = require('crypto');
 const pty = require('node-pty');
 
@@ -65,6 +65,93 @@ ipcMain.handle('fs:readdir', async (_e, dir) => {
 ipcMain.handle('fs:readFile', (_e, p) => fs.promises.readFile(p, 'utf8'));
 ipcMain.handle('fs:writeFile', (_e, p, data) => fs.promises.writeFile(p, data, 'utf8'));
 
+// Watch the open folder so the tree reflects files added/removed on disk
+// (e.g. by an agent in the terminal). One active watcher; debounced.
+let treeWatcher = null;
+ipcMain.handle('fs:watch', (e, dir) => {
+  if (treeWatcher) { try { treeWatcher.close(); } catch {} treeWatcher = null; }
+  if (!dir) return;
+  let timer = null;
+  try {
+    treeWatcher = fs.watch(dir, { recursive: true }, () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!e.sender.isDestroyed()) e.sender.send('fs:changed');
+      }, 120);
+    });
+  } catch { treeWatcher = null; }
+});
+
+// ---------- git ----------
+// The renderer asks for a file as of HEAD and diffs it against the live buffer
+// itself, so the gutter shows uncommitted work — an agent's edits included —
+// without waiting for a save.
+const GIT_MAX = 4 * 1024 * 1024; // don't ship huge/binary blobs to the renderer
+const gitRoots = new Map();      // dir -> repo root | null
+
+function gitRun(args, cwd, opts = {}) {
+  return new Promise((res) => {
+    execFile('git', args, { cwd, maxBuffer: GIT_MAX, ...opts },
+      (err, out) => res(err ? null : out));
+  });
+}
+
+async function gitRoot(dir) {
+  if (gitRoots.has(dir)) return gitRoots.get(dir);
+  const out = await gitRun(['rev-parse', '--show-toplevel'], dir);
+  const root = out ? out.trim() : null;
+  gitRoots.set(dir, root);
+  return root;
+}
+
+ipcMain.handle('git:base', async (_e, file) => {
+  const dir = path.dirname(file);
+  let root;
+  try { root = await gitRoot(dir); } catch { root = null; }
+  if (!root) return { repo: false };
+  const rel = path.relative(root, file).split(path.sep).join('/');
+  const out = await gitRun(['show', `HEAD:${rel}`], root);
+  // no blob at HEAD: the file is new (or newly tracked) — everything is added
+  if (out == null) return { repo: true, text: '' };
+  if (out.includes('\0')) return { repo: false }; // binary
+  return { repo: true, text: out };
+});
+
+// Commit history for the :tree panel. The working tree comes back alongside the
+// commits so the panel can show what is uncommitted as the newest "commit".
+const LOG_LIMIT = 400;
+const F = '\x1f'; // field separator inside a log record
+
+ipcMain.handle('git:log', async (_e, dir) => {
+  const root = await gitRoot(dir);
+  if (!root) return { repo: false };
+  const fmt = ['%H', '%h', '%P', '%an', '%ar', '%D', '%s'].join('%x1f');
+  const [log, status, branch] = await Promise.all([
+    gitRun(['log', `--pretty=format:${fmt}`, '-n', String(LOG_LIMIT), 'HEAD'], root),
+    gitRun(['-c', 'core.quotepath=false', 'status', '--porcelain'], root),
+    gitRun(['rev-parse', '--abbrev-ref', 'HEAD'], root)
+  ]);
+  const commits = (log || '').split('\n').filter(Boolean).map((line) => {
+    const [h, short, parents, an, ar, refs, subj] = line.split(F);
+    return { h, short, parents: parents ? parents.split(' ') : [], an, ar, refs, subj };
+  });
+  // a rename reads "R  old -> new"; the new name is the one worth opening
+  const changed = (status || '').split('\n').filter(Boolean).map((l) => ({
+    st: l.slice(0, 2).trim() || '?', path: l.slice(3).trim().split(' -> ').pop()
+  }));
+  return { repo: true, root, branch: (branch || '').trim(), commits, changed };
+});
+
+ipcMain.handle('git:commitFiles', async (_e, dir, hash) => {
+  const root = await gitRoot(dir);
+  if (!root) return [];
+  const out = await gitRun(['-c', 'core.quotepath=false', 'show', '--name-status', '--pretty=format:', hash], root);
+  return (out || '').split('\n').filter(Boolean).map((l) => {
+    const [st, ...rest] = l.split('\t');
+    return { st, path: rest[rest.length - 1] };
+  });
+});
+
 // ---------- terminal ----------
 ipcMain.handle('pty:create', (e, { cwd, cols, rows }) => {
   const id = crypto.randomUUID();
@@ -86,95 +173,6 @@ ipcMain.on('pty:write', (_e, { id, data }) => ptys.get(id)?.p.write(data));
 ipcMain.on('pty:resize', (_e, { id, cols, rows }) => { try { ptys.get(id)?.p.resize(cols, rows); } catch {} });
 ipcMain.on('pty:kill', (_e, { id }) => { try { ptys.get(id)?.p.kill(); } catch {} ptys.delete(id); });
 
-// ---------- AI agent detection + stats ----------
-const { execFile } = require('child_process');
-const AGENT_RE = /(?:^|[/\s])(claude|codex|aider|goose|opencode|gemini|copilot|cursor-agent|amp)(?:\s|$)/i;
-// context-window size guesses by model substring; first match wins
-const CTX_WINDOWS = [['[1m]', 1000000], ['fable', 500000], ['', 200000]];
-const USAGE_BUDGET = 5000000; // tokens the usage meter is drawn against
-
-function psList() {
-  return new Promise((res) => {
-    execFile('ps', ['-axo', 'pid=,ppid=,command='], { maxBuffer: 16 * 1024 * 1024 },
-      (_err, out) => res(out || ''));
-  });
-}
-
-// find an AI agent process among the descendants of a pty's shell
-function findAgent(psOut, rootPid) {
-  const children = new Map(); // ppid -> [{pid, cmd}]
-  for (const line of psOut.split('\n')) {
-    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
-    if (!m) continue;
-    const [, pid, ppid, cmd] = m;
-    if (!children.has(+ppid)) children.set(+ppid, []);
-    children.get(+ppid).push({ pid: +pid, cmd });
-  }
-  const queue = [rootPid];
-  while (queue.length) {
-    for (const c of children.get(queue.shift()) || []) {
-      const m = c.cmd.match(AGENT_RE);
-      if (m) return m[1].toLowerCase();
-      queue.push(c.pid);
-    }
-  }
-  return null;
-}
-
-// stats from the newest Claude Code session transcript for this cwd
-async function claudeStats(cwd) {
-  const dir = path.join(os.homedir(), '.claude', 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-'));
-  let newest = null;
-  try {
-    for (const name of await fs.promises.readdir(dir)) {
-      if (!name.endsWith('.jsonl')) continue;
-      const full = path.join(dir, name);
-      const st = await fs.promises.stat(full);
-      if (!newest || st.mtimeMs > newest.mtimeMs) newest = { full, mtimeMs: st.mtimeMs, size: st.size };
-    }
-  } catch { return null; }
-  if (!newest) return null;
-
-  // read at most the last 8MB — enough for the running totals to be honest on all but marathon sessions
-  const MAX_READ = 8 * 1024 * 1024;
-  const start = Math.max(0, newest.size - MAX_READ);
-  const fh = await fs.promises.open(newest.full, 'r');
-  let text;
-  try {
-    const buf = Buffer.alloc(newest.size - start);
-    await fh.read(buf, 0, buf.length, start);
-    text = buf.toString('utf8');
-  } finally { await fh.close(); }
-
-  let last = null, totalIn = 0, totalOut = 0;
-  for (const line of text.split('\n')) {
-    let o; try { o = JSON.parse(line); } catch { continue; }
-    const u = o?.message?.usage;
-    if (!u || u.input_tokens == null) continue;
-    last = { u, model: o.message.model || '' };
-    totalIn += u.input_tokens || 0;
-    totalOut += u.output_tokens || 0;
-  }
-  if (!last) return null;
-  const { u, model } = last;
-  const used = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0)
-             + (u.cache_read_input_tokens || 0) + (u.output_tokens || 0);
-  const max = CTX_WINDOWS.find(([k]) => model.toLowerCase().includes(k))[1];
-  return { context: { used, max }, usage: { tokens: totalIn + totalOut, budget: USAGE_BUDGET }, model };
-}
-
-ipcMain.handle('agent:stats', async () => {
-  if (ptys.size === 0) return null;
-  const psOut = await psList();
-  for (const { p, cwd } of ptys.values()) {
-    const agent = findAgent(psOut, p.pid);
-    if (!agent) continue;
-    const stats = agent === 'claude' ? await claudeStats(cwd) : null;
-    return { agent, ...(stats || {}) };
-  }
-  return null;
-});
-
 // ---------- jupyter server (for ipynb execution) ----------
 function pythonCandidates() {
   const home = os.homedir();
@@ -189,10 +187,30 @@ function pythonCandidates() {
   return [...new Set([...fixed, 'python3', 'python'])];
 }
 
+// True on Apple Silicon even when this process runs x86_64 under Rosetta
+// (in which case process.arch lies and reports 'x64').
+function isAppleSilicon() {
+  if (process.platform !== 'darwin') return false;
+  if (process.arch === 'arm64') return true;
+  try {
+    const { execFileSync } = require('child_process');
+    return execFileSync('/usr/sbin/sysctl', ['-n', 'sysctl.proc_translated']).toString().trim() === '1';
+  } catch { return false; }
+}
+
 function tryJupyter(py, args, cwd, token) {
   return new Promise((resolve) => {
     let proc;
-    try { proc = spawn(py, args, { cwd, env: process.env }); }
+    // On Apple Silicon the server (and the kernels it spawns) can end up running
+    // under Rosetta/x86_64, which then can't load arm64-compiled wheels
+    // (numpy/scipy/rpds/…). Force the native arm64 slice so the arch of the
+    // kernel matches the installed packages.
+    let cmd = py, cmdArgs = args;
+    if (isAppleSilicon()) {
+      cmd = '/usr/bin/arch';
+      cmdArgs = ['-arm64', py, ...args];
+    }
+    try { proc = spawn(cmd, cmdArgs, { cwd, env: process.env }); }
     catch (err) { return resolve({ error: String(err) }); }
     let settled = false;
     let buf = '';

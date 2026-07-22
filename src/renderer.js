@@ -18,14 +18,14 @@ import { Term } from './term.js';
 import { Notebook } from './notebook.js';
 import { startCat } from './cat.js';
 import { Calendar } from './cal.js';
-import { startAgentMeter } from './agentmeter.js';
 import { THEMES, DEFAULT_THEME, applyThemeVars, termThemeOf, activeThemeName } from './themes.js';
+import { gitGutter, loadGitBase } from './gitgutter.js';
+import { GitTree } from './gittree.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
   tree: $('tree'), welcome: $('welcome'), editor: $('editor'), tabs: $('tabs'),
-  content: $('content'), termwrap: $('termwrap'), term: $('term'),
-  split: $('split'), splitPh: $('split-placeholder'), splitEd: $('split-editor'), splitTermEl: $('split-term'),
+  content: $('content'), panes: $('panes'), termwrap: $('termwrap'), term: $('term'),
   statusL: $('status-left'), statusR: $('status-right'), statusM: $('status-mode'), statusP: $('status-project'),
   cheat: $('cheat-overlay'), cheatPanel: $('cheat-panel')
 };
@@ -38,7 +38,6 @@ const state = {
   termVisible: false
 };
 let leader = false;           // '\' pressed, waiting for the chord key
-const split = { open: false, pending: false, kind: null, path: null, nb: null };
 const textStates = new Map(); // path -> EditorState (preserves undo history)
 const notebooks = new Map();  // path -> { nb: Notebook, el }
 const dirtyMap = new Map();   // path -> bool
@@ -47,25 +46,202 @@ const isNb = (p) => p.endsWith('.ipynb');
 const base = (p) => p.split('/').pop();
 
 // ---------- projects ----------
-// Each opened folder is a project with its own tabs, tree root and terminals.
-// Terminals (ptys) and notebook kernels belong to the project and KEEP RUNNING
-// while another project is in the foreground — only their DOM is hidden.
-const projects = []; // [{ name, folder, tabs, active, treeVisible, termVisible, term, termEl, splitTerm, splitTermEl }]
+// Each opened folder is a project with its own tabs, tree root, bottom terminal
+// and pane tree (splits). Everything a project owns — pty terminals, notebook
+// kernels, split layout — KEEPS RUNNING while another project is in the
+// foreground: its pane tree is only hidden, never torn down.
+const projects = []; // [{ name, folder, tabs, active, treeVisible, termVisible, term, termEl, rootEl, root, main, focused }]
 let curProj = -1;
 const curP = () => projects[curProj] || null;
+
+// ---------- pane tree ----------
+// A project's layout is a tree: leaves are panes, boxes are flex containers
+// ({ dir: 'row' (vsplit, side by side) | 'col' (split, stacked), children }).
+// The 'main' leaf hosts the shared #content element (tabs/editor/notebooks);
+// every other leaf owns its content: an editor, a terminal or a notebook.
+
+function makeLeaf() {
+  const el = document.createElement('div');
+  el.className = 'pane-leaf';
+  el.tabIndex = 0;
+  const phEl = document.createElement('div');
+  phEl.className = 'pane-ph';
+  phEl.innerHTML = '<span><kbd>:open &lt;file&gt;</kbd> or <kbd>:term</kbd></span>';
+  el.appendChild(phEl);
+  return { kind: 'placeholder', main: false, el, phEl, edEl: null, termEl: null, editor: null, term: null, nb: null, path: null, parent: null };
+}
+
+function collectLeaves(n, out = []) {
+  if (!n.children) out.push(n);
+  else n.children.forEach(c => collectLeaves(c, out));
+  return out;
+}
+
+function leafOf(el) {
+  const p = curP();
+  if (!p || !el) return null;
+  const paneEl = el.closest?.('.pane-leaf');
+  if (!paneEl) return null;
+  return collectLeaves(p.root).find(l => l.el === paneEl) || null;
+}
+
+function makeDivider(dir) {
+  const d = document.createElement('div');
+  d.className = 'pane-divider ' + (dir === 'row' ? 'v' : 'h');
+  d.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const horiz = dir === 'row';
+    const box = d.parentElement;
+    // freeze every sibling's current size as its flex-grow ratio so only the
+    // two neighbours of this divider move during the drag
+    for (const k of box.children) {
+      if (k.classList.contains('pane-divider')) continue;
+      const r = k.getBoundingClientRect();
+      k.style.flex = `${horiz ? r.width : r.height} 1 0px`;
+    }
+    const prev = d.previousElementSibling, next = d.nextElementSibling;
+    const a0 = parseFloat(prev.style.flex), b0 = parseFloat(next.style.flex);
+    const start = horiz ? e.clientX : e.clientY;
+    d.classList.add('dragging');
+    const onMove = (ev) => {
+      const delta = (horiz ? ev.clientX : ev.clientY) - start;
+      const a = Math.max(Math.min(a0 + delta, a0 + b0 - 110), 110);
+      prev.style.flex = `${a} 1 0px`;
+      next.style.flex = `${a0 + b0 - a} 1 0px`;
+    };
+    const onUp = () => {
+      d.classList.remove('dragging');
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      resizeProjectTerms(curP());
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+  return d;
+}
+
+function splitLeaf(p, target, dir) {
+  const nl = makeLeaf();
+  const parent = target.parent;
+  if (parent && parent.dir === dir) {
+    parent.children.splice(parent.children.indexOf(target) + 1, 0, nl);
+    nl.parent = parent;
+    nl.el.style.flex = target.el.style.flex;
+    target.el.after(makeDivider(dir), nl.el);
+  } else {
+    const box = { dir, el: document.createElement('div'), children: [target, nl], parent };
+    box.el.className = 'pane-box ' + (dir === 'row' ? 'row' : 'col');
+    box.el.style.flex = target.el.style.flex; // keep target's share of its old box
+    target.el.replaceWith(box.el);
+    box.el.append(target.el, makeDivider(dir), nl.el);
+    target.el.style.flex = ''; nl.el.style.flex = '';
+    if (parent) parent.children[parent.children.indexOf(target)] = box;
+    else p.root = box;
+    target.parent = box; nl.parent = box;
+  }
+  p.focused = nl;
+  nl.el.focus();
+  setStatus('new pane: :open <file> or :term');
+  resizeProjectTerms(p);
+  return nl;
+}
+
+function destroyLeafContent(l) {
+  if (l.kind === 'file' && l.path && l.editor) textStates.set(l.path, l.editor.state);
+  if (l.editor) {
+    // :q may arrive from inside this editor's own dispatch — destroy async
+    const v = l.editor; l.editor = null;
+    setTimeout(() => v.destroy(), 0);
+  }
+  if (l.term) {
+    if (l.term.id) window.quip.ptyKill(l.term.id);
+    l.term = null;
+  }
+  if (l.nb) { l.nb.nb.restartKernel(); l.nb.el.remove(); l.nb = null; }
+  l.path = null;
+}
+
+function closeLeaf(p, l) {
+  if (l.main) return;
+  destroyLeafContent(l);
+  const parent = l.parent;
+  const d = l.el.previousElementSibling?.classList?.contains('pane-divider')
+    ? l.el.previousElementSibling : l.el.nextElementSibling;
+  d?.remove();
+  l.el.remove();
+  parent.children.splice(parent.children.indexOf(l), 1);
+  if (parent.children.length === 1) {
+    const only = parent.children[0];
+    only.el.style.flex = parent.el.style.flex;
+    parent.el.before(only.el);
+    parent.el.remove();
+    only.parent = parent.parent;
+    if (parent.parent) parent.parent.children[parent.parent.children.indexOf(parent)] = only;
+    else p.root = only;
+  }
+  if (p.focused === l) p.focused = p.main;
+  focusLeaf(p.main);
+  resizeProjectTerms(p);
+}
+
+function closeAllSplits(p) {
+  if (!p) return;
+  for (const l of collectLeaves(p.root)) if (!l.main) closeLeaf(p, l);
+}
+
+function pendingLeaf(p) {
+  return p ? collectLeaves(p.root).find(l => !l.main && l.kind === 'placeholder') : null;
+}
+
+function focusLeaf(l) {
+  const p = curP();
+  if (p) p.focused = l;
+  if (l.main) { if (state.active) focusActive(); else l.el.focus(); return; }
+  if (l.kind === 'file') l.editor?.focus();
+  else if (l.kind === 'term') l.term?.focus();
+  else if (l.kind === 'nb') l.nb?.el.focus();
+  else l.el.focus();
+}
+
+function resizeProjectTerms(p) {
+  if (!p) return;
+  requestAnimationFrame(() => {
+    p.term?.resize();
+    for (const l of collectLeaves(p.root)) l.term?.resize();
+  });
+}
 
 function makeProject(folder) {
   const termEl = document.createElement('div');
   termEl.className = 'term-inst hidden';
   els.term.appendChild(termEl);
-  const splitTermEl = document.createElement('div');
-  splitTermEl.className = 'term-inst hidden';
-  els.splitTermEl.appendChild(splitTermEl);
+  const rootEl = document.createElement('div');
+  rootEl.className = 'pane-root hidden';
+  els.panes.appendChild(rootEl);
+  const main = makeLeaf();
+  main.main = true;
+  main.kind = 'main';
+  main.phEl.remove(); // the main leaf hosts #content instead
+  rootEl.appendChild(main.el);
   return {
     folder, name: folder ? base(folder) : '~',
     tabs: [], active: null, treeVisible: !!folder, termVisible: false,
-    term: null, termEl, splitTerm: null, splitTermEl
+    term: null, termEl,
+    rootEl, root: main, main, focused: main
   };
+}
+
+// terminal or split with nothing open yet gets an implicit home project
+function ensureProject() {
+  if (curP()) return curP();
+  const p = makeProject(null);
+  projects.push(p);
+  curProj = projects.length - 1;
+  p.rootEl.classList.remove('hidden');
+  p.main.el.appendChild(els.content);
+  updateStatusProject();
+  return p;
 }
 
 function mainTerm() {
@@ -94,18 +270,21 @@ async function switchProject(i) {
   const p = projects[i];
   if (!p || i === curProj) return;
   snapshotCurrent();
-  if (split.open) closeSplit(); // pane content is stashed; project terms survive
+  const prev = curP();
+  if (prev) prev.rootEl.classList.add('hidden');
   curProj = i;
   state.folder = p.folder;
   state.tabs = p.tabs;
   state.active = null;
   state.treeVisible = p.treeVisible;
   state.termVisible = p.termVisible;
+  p.main.el.appendChild(els.content); // #content is shared; splits are per-project and stay put
+  p.rootEl.classList.remove('hidden');
   if (p.folder) await tree.setRoot(p.folder);
   els.tree.classList.toggle('hidden', !p.treeVisible);
   for (const q of projects) q.termEl.classList.toggle('hidden', q !== p);
   els.termwrap.classList.toggle('hidden', !p.termVisible);
-  if (p.termVisible && p.term) p.term.resize();
+  resizeProjectTerms(p);
   if (p.active) await activate(p.active);
   else { showOnly('welcome'); renderTabs(); updateStatusRight(); }
   updateStatusProject();
@@ -131,17 +310,22 @@ function closeProject() {
 async function doCloseProject(i) {
   const p = projects[i];
   snapshotCurrent();
-  if (split.open) closeSplit();
   for (const t of p.tabs) {
     textStates.delete(t.path);
     dirtyMap.delete(t.path);
     const nb = notebooks.get(t.path);
     if (nb) { nb.nb.restartKernel(); nb.el.remove(); notebooks.delete(t.path); }
   }
+  for (const l of collectLeaves(p.root)) {
+    if (l.main) continue;
+    const path = l.path;
+    destroyLeafContent(l);
+    if (path) { textStates.delete(path); dirtyMap.delete(path); }
+  }
   if (p.term?.id) window.quip.ptyKill(p.term.id);
-  if (p.splitTerm?.id) window.quip.ptyKill(p.splitTerm.id);
   p.termEl.remove();
-  p.splitTermEl.remove();
+  if (els.content.parentElement === p.main.el) els.panes.appendChild(els.content);
+  p.rootEl.remove();
   projects.splice(i, 1);
   curProj = -1;
   if (projects.length) return switchProject(Math.min(i, projects.length - 1));
@@ -208,6 +392,61 @@ document.addEventListener('focusout', () => setTimeout(refreshMode, 0));
 window.addEventListener('keyup', () => refreshMode(), true);
 window.addEventListener('mouseup', () => refreshMode(), true);
 
+// ---------- external edits ----------
+// A file changed on disk under us — an agent working in the terminal, a git
+// checkout, another editor. Clean buffers follow the file so what you see is
+// what is there; buffers with unsaved edits are left alone. Either way the git
+// gutter is re-based, so HEAD moving (a commit) repaints the marks.
+let externalSync = false; // set while replacing a doc, so it isn't marked dirty
+
+// smallest replacement that turns the buffer into `text`, to keep the cursor put
+function replaceDoc(view, text) {
+  const cur = view.state.doc.toString();
+  if (cur === text) return;
+  let s = 0;
+  const n = Math.min(cur.length, text.length);
+  while (s < n && cur[s] === text[s]) s++;
+  let e1 = cur.length, e2 = text.length;
+  while (e1 > s && e2 > s && cur[e1 - 1] === text[e2 - 1]) { e1--; e2--; }
+  externalSync = true;
+  try { view.dispatch({ changes: { from: s, to: e1, insert: text.slice(s, e2) } }); }
+  finally { externalSync = false; }
+}
+
+async function syncEditor(view, path) {
+  if (!view || !path || isNb(path)) return;
+  if (!dirtyMap.get(path)) {
+    try { replaceDoc(view, await window.quip.readFile(path)); } catch { return; }
+  }
+  loadGitBase(view, path);
+}
+
+// background tabs have no live view — drop the cached state of any that went
+// stale so re-activating them re-reads the file
+async function dropStaleTabs() {
+  for (const t of state.tabs) {
+    if (t.path === state.active || isNb(t.path) || dirtyMap.get(t.path)) continue;
+    const cached = textStates.get(t.path);
+    if (!cached) continue;
+    try {
+      const text = await window.quip.readFile(t.path);
+      if (text !== cached.doc.toString()) textStates.delete(t.path);
+    } catch { textStates.delete(t.path); }
+  }
+}
+
+let diskSyncTimer = null;
+function scheduleDiskSync() {
+  clearTimeout(diskSyncTimer);
+  diskSyncTimer = setTimeout(() => {
+    if (state.active) syncEditor(editorView, state.active);
+    for (const p of projects) {
+      for (const l of collectLeaves(p.root)) if (l.kind === 'file') syncEditor(l.editor, l.path);
+    }
+    dropStaleTabs();
+  }, 150);
+}
+
 // ---------- editor ----------
 function langFor(path) {
   const ext = path.split('.').pop().toLowerCase();
@@ -231,9 +470,10 @@ function baseExtensions(path) {
     gruvboxEditorTheme,
     indentUnit.of('    '),
     langFor(path),
+    gitGutter(),
     keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap]),
     EditorView.updateListener.of(u => {
-      if (u.docChanged && state.active && !isNb(state.active)) setDirty(state.active, true);
+      if (u.docChanged && !externalSync && state.active && !isNb(state.active)) setDirty(state.active, true);
     })
   ];
 }
@@ -302,6 +542,7 @@ async function activate(path) {
       catch (err) { setStatus('cannot open: ' + err.message); return; }
       editorView.setState(EditorState.create({ doc: text, extensions: baseExtensions(path) }));
     }
+    loadGitBase(editorView, path);
     editorView.focus();
   }
   renderTabs();
@@ -346,10 +587,8 @@ async function saveCurrent() {
   setStatus('saved ' + base(p));
 }
 
-// ---------- split pane ----------
-let splitEditor = null;
-
-function splitExtensions(path) {
+// ---------- pane content ----------
+function leafExtensions(path) {
   return [
     vim({ status: true }),
     lineNumbers(),
@@ -363,48 +602,45 @@ function splitExtensions(path) {
     gruvboxEditorTheme,
     indentUnit.of('    '),
     langFor(path),
+    gitGutter(),
     keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap]),
-    EditorView.updateListener.of(u => { if (u.docChanged) { dirtyMap.set(path, true); renderTabs(); } })
+    EditorView.updateListener.of(u => {
+      if (u.docChanged && !externalSync) { dirtyMap.set(path, true); renderTabs(); }
+    })
   ];
 }
 
-function showSplitContent(kind) {
-  els.splitPh.classList.toggle('hidden', kind !== 'placeholder');
-  els.splitEd.classList.toggle('hidden', kind !== 'file');
-  els.splitTermEl.classList.toggle('hidden', kind !== 'term');
-  if (split.nb) split.nb.el.classList.toggle('hidden', kind !== 'nb');
+function showLeafContent(l, kind) {
+  l.kind = kind;
+  l.phEl.classList.toggle('hidden', kind !== 'placeholder');
+  if (l.edEl) l.edEl.classList.toggle('hidden', kind !== 'file');
+  if (l.termEl) l.termEl.classList.toggle('hidden', kind !== 'term');
+  if (l.nb) l.nb.el.classList.toggle('hidden', kind !== 'nb');
 }
 
-function openSplit() {
-  els.split.classList.remove('hidden');
-  $('pane-divider').classList.remove('hidden');
-  split.open = true;
-  split.pending = true;
-  showSplitContent('placeholder');
-  setStatus('split: :open <file> or :term');
-  curP()?.term?.resize();
+// stop/stash whatever the leaf currently shows before it gets new content
+function stashLeaf(l) {
+  if (l.kind === 'file' && l.path && l.editor) textStates.set(l.path, l.editor.state);
+  if (l.nb) { l.nb.nb.restartKernel(); l.nb.el.remove(); l.nb = null; }
+  if (l.term) {
+    if (l.term.id) window.quip.ptyKill(l.term.id);
+    l.term = null;
+    l.termEl.remove(); l.termEl = null;
+  }
 }
 
-function stashSplit() {
-  if (split.kind === 'file' && split.path && splitEditor) textStates.set(split.path, splitEditor.state);
-  if (split.nb) { split.nb.el.remove(); split.nb = null; }
-}
-
-async function openInSplit(path) {
-  if (!split.open) openSplit();
+async function openInLeaf(l, path) {
   if (isNb(path) && notebooks.has(path)) { setStatus(base(path) + ' is already open in the main pane'); return; }
-  stashSplit();
-  split.pending = false;
-  split.path = path;
+  stashLeaf(l);
+  l.path = path;
   if (isNb(path)) {
     const el = document.createElement('div');
     el.className = 'notebook-view';
     el.tabIndex = 0;
-    els.split.appendChild(el);
+    l.el.appendChild(el);
     const nb = new Notebook(el, { onStatus: setStatus, onDirty: (d) => { dirtyMap.set(path, d); updateStatusRight(); } });
-    split.nb = { nb, el };
-    split.kind = 'nb';
-    showSplitContent('nb');
+    l.nb = { nb, el };
+    showLeafContent(l, 'nb');
     try { await nb.open(path, state.folder); }
     catch (err) { setStatus('failed to open notebook: ' + err.message); }
   } else {
@@ -413,98 +649,79 @@ async function openInSplit(path) {
       let text;
       try { text = await window.quip.readFile(path); }
       catch (err) { setStatus('cannot open: ' + err.message); return; }
-      cached = EditorState.create({ doc: text, extensions: splitExtensions(path) });
+      cached = EditorState.create({ doc: text, extensions: leafExtensions(path) });
     }
-    if (!splitEditor) splitEditor = new EditorView({ state: cached, parent: els.splitEd });
-    else splitEditor.setState(cached);
-    split.kind = 'file';
-    showSplitContent('file');
-    splitEditor.focus();
+    if (!l.edEl) { l.edEl = document.createElement('div'); l.edEl.className = 'pane-ed'; l.el.appendChild(l.edEl); }
+    if (!l.editor) l.editor = new EditorView({ state: cached, parent: l.edEl });
+    else l.editor.setState(cached);
+    showLeafContent(l, 'file');
+    loadGitBase(l.editor, path);
+    l.editor.focus();
   }
 }
 
-async function termInSplit() {
-  const p = curP();
-  if (!p) { setStatus('open a folder first (⌘O)'); return; }
-  if (!split.open) openSplit();
-  stashSplit();
-  split.pending = false;
-  split.kind = 'term';
-  split.path = null;
-  if (!p.splitTerm) p.splitTerm = new Term(p.splitTermEl);
-  for (const q of projects) q.splitTermEl.classList.toggle('hidden', q !== p);
-  showSplitContent('term');
-  await p.splitTerm.ensure(state.folder || undefined);
-  p.splitTerm.resize();
-  p.splitTerm.focus();
+async function termInLeaf(p, l) {
+  if (l.kind !== 'term') {
+    if (l.kind === 'file' && l.path && l.editor) textStates.set(l.path, l.editor.state);
+    if (l.nb) { l.nb.nb.restartKernel(); l.nb.el.remove(); l.nb = null; }
+    l.path = null;
+  }
+  if (!l.termEl) { l.termEl = document.createElement('div'); l.termEl.className = 'pane-term'; l.el.appendChild(l.termEl); }
+  if (!l.term) l.term = new Term(l.termEl);
+  showLeafContent(l, 'term');
+  await l.term.ensure(p.folder || undefined);
+  l.term.resize();
+  l.term.focus();
 }
 
-function focusSplitContent() {
-  if (split.kind === 'file') splitEditor?.focus();
-  else if (split.kind === 'term') curP()?.splitTerm?.focus();
-  else if (split.kind === 'nb') split.nb?.el.focus();
-  else setStatus('split is empty — :open <file> or :term');
+async function saveLeaf(l) {
+  if (l.kind === 'nb') return l.nb?.nb.save();
+  if (l.kind === 'file' && l.path && l.editor) {
+    await window.quip.writeFile(l.path, l.editor.state.doc.toString());
+    dirtyMap.set(l.path, false);
+    renderTabs(); updateStatusRight();
+    setStatus('saved ' + base(l.path));
+  }
+}
+
+function splitFocused(dir, origin) {
+  const p = ensureProject();
+  const leaves = collectLeaves(p.root);
+  const target = (origin && leaves.includes(origin)) ? origin
+    : (leafOf(document.activeElement) || (leaves.includes(p.focused) ? p.focused : p.main));
+  return splitLeaf(p, target, dir);
 }
 
 function switchPane() {
-  if (!split.open) { setStatus('no split — :vsplit first'); return; }
-  if (document.activeElement?.closest('#split')) focusActive();
-  else focusSplitContent();
+  const p = curP();
+  if (!p) { setStatus('no split — :vsplit or :split first'); return; }
+  const leaves = collectLeaves(p.root);
+  if (leaves.length === 1) {
+    // No split: \ w toggles focus between the file tree and the editor content.
+    if (!state.treeVisible) { setStatus('no split — :vsplit or :split first'); return; }
+    if (document.activeElement?.closest('#tree')) focusActive();
+    else tree.focus();
+    return;
+  }
+  const cur = leafOf(document.activeElement);
+  const i = cur ? leaves.indexOf(cur) : -1;
+  focusLeaf(leaves[(i + 1) % leaves.length]);
 }
-
-function closeSplit() {
-  if (!split.open) return;
-  stashSplit();
-  els.split.classList.add('hidden');
-  $('pane-divider').classList.add('hidden');
-  els.split.style.width = ''; els.split.style.flex = '';
-  updatePaneFocus();
-  split.open = false; split.pending = false; split.kind = null; split.path = null;
-  curP()?.term?.resize();
-  focusActive();
-}
-
-// draggable divider — resizes the split by pinning its width
-const divider = $('pane-divider');
-divider.addEventListener('mousedown', (e) => {
-  e.preventDefault();
-  divider.classList.add('dragging');
-  const startX = e.clientX;
-  const startW = els.split.getBoundingClientRect().width;
-  const total = $('panes').getBoundingClientRect().width;
-  const onMove = (ev) => {
-    const w = Math.min(Math.max(startW + (startX - ev.clientX), 180), total - 180);
-    els.split.style.flex = 'none';
-    els.split.style.width = w + 'px';
-  };
-  const onUp = () => {
-    divider.classList.remove('dragging');
-    window.removeEventListener('mousemove', onMove);
-    window.removeEventListener('mouseup', onUp);
-  };
-  window.addEventListener('mousemove', onMove);
-  window.addEventListener('mouseup', onUp);
-});
 
 function updatePaneFocus() {
-  const inSplit = !!document.activeElement?.closest('#split');
-  els.split.classList.toggle('pane-focused', split.open && inSplit);
-  els.content.classList.toggle('pane-focused', split.open && !inSplit);
-}
-
-async function saveSplit() {
-  if (split.kind === 'nb') return split.nb?.nb.save();
-  if (split.kind === 'file' && split.path && splitEditor) {
-    await window.quip.writeFile(split.path, splitEditor.state.doc.toString());
-    dirtyMap.set(split.path, false);
-    setStatus('saved ' + base(split.path));
-  }
+  const p = curP();
+  if (!p) return;
+  const leaves = collectLeaves(p.root);
+  const multi = leaves.length > 1;
+  const cur = leafOf(document.activeElement);
+  if (cur) p.focused = cur;
+  for (const l of leaves) l.el.classList.toggle('pane-focused', multi && l === cur);
 }
 
 // ---------- cheatsheet ----------
 const CHEAT = [
   ['GLOBAL', [
-    ['⌘O', 'open folder'], ['\\ e', 'toggle file tree'], ['\\ w', 'switch pane focus (split)'], ['⌘J', 'toggle terminal'],
+    ['⌘O', 'open folder'], ['\\ e', 'toggle file tree'], ['\\ w', 'cycle pane focus'], ['⌘J', 'toggle terminal'],
     ['⌘S', 'save'], ['⌘+ / ⌘− / ⌘0', 'zoom in / out / reset'],
     ['⌘⇧] / ⌘⇧[', 'next / previous tab'], [':', 'command line (works anywhere)']
   ]],
@@ -512,14 +729,16 @@ const CHEAT = [
     ['⌘O', 'open folder as a new project (existing folder → switch to it)'],
     ['⌘1–9', 'switch to project n'], ['\\ p', 'cycle projects'],
     [':proj', 'list projects'], [':proj <n|name>', 'switch project'], [':pq', 'close project (asks y/n)'],
-    ['', 'terminals & notebook kernels keep running in background projects']
+    ['', 'splits, terminals & notebook kernels keep running in background projects']
   ]],
   ['COMMANDS', [
     [':w :q :wq :x', 'save / close pane or tab / both'], [':qa', 'quit app'],
-    [':open <path>', 'open file (alias :e)'], [':open -t <path>', 'open file in split'],
-    [':vsplit', 'open empty split, then :open / :term'], [':only', 'close split'],
-    [':term', 'terminal (fills a pending split, else bottom panel)'],
+    [':open <path>', 'open file (alias :e)'], [':open -t <path>', 'open file in a new split'],
+    [':vsplit / :split', 'vertical / horizontal split — repeat as often as you like'],
+    [':only', 'close all splits'],
+    [':term', 'terminal (fills an empty split, else bottom panel)'],
     [':Ex', 'toggle file tree'], [':cheat', 'this cheatsheet'], [':cal', 'toggle calendar'],
+    [':tree', 'version history of the working branch (aliases :log, :git)'],
     [':theme <name>', 'switch theme (bare :theme lists all)']
   ]],
   ['FILE TREE', [
@@ -533,6 +752,12 @@ const CHEAT = [
     ['a / b', 'new cell above / below'], ['dd', 'delete cell'], ['m / y', 'markdown / code'],
     [':restart', 'restart kernel'], [':restartall', 'restart kernel + run all'],
     ['gg / G', 'first / last cell']
+  ]],
+  ['HISTORY (:tree)', [
+    ['j / k', 'move'], ['Enter / l', 'expand commit — list the files it touched'],
+    ['h', 'collapse'], ['o / Enter', 'open the selected file'],
+    ['g / G', 'first / last'], ['y', 'yank commit hash'], ['r', 'reload'], ['q / Esc', 'close'],
+    ['', 'top row is the working tree: everything uncommitted right now']
   ]],
   ['CALENDAR (:cal)', [
     ['h j k l / arrows', 'move day (j/k = week)'], ['H / L (or [ ])', 'previous / next month'],
@@ -558,40 +783,59 @@ els.cheat.addEventListener('click', () => toggleCheat(false));
 // ---------- calendar ----------
 const calendar = new Calendar(document.body, { onStatus: setStatus });
 
+// ---------- git history ----------
+const gitTree = new GitTree(document.body, {
+  onStatus: setStatus,
+  onOpenFile: (p) => openFile(p),
+  folder: () => state.folder
+});
+
 // ---------- ex commands ----------
-// origin: which pane the command was issued from ('main' | 'split')
-async function runEx(line, origin = 'main') {
+// origin: the pane leaf the command was issued from (null → main behaviour)
+async function runEx(line, origin = null) {
   const [cmd, ...args] = line.trim().split(/\s+/);
   if (!cmd) return;
-  const inSplit = origin === 'split';
+  const p = curP();
+  const inSplit = !!(origin && !origin.main);
   const resolve = (f) => f.startsWith('/') ? f : (state.folder ? state.folder + '/' + f : f);
   switch (cmd) {
-    case 'w': case 'write': return inSplit ? saveSplit() : saveCurrent();
-    case 'q': case 'quit': return inSplit ? closeSplit() : closeFile();
+    case 'w': case 'write': return inSplit ? saveLeaf(origin) : saveCurrent();
+    case 'q': case 'quit': return inSplit ? closeLeaf(p, origin) : closeFile();
     case 'wq': case 'x': case 'xit':
-      if (inSplit) { await saveSplit(); return closeSplit(); }
+      if (inSplit) { await saveLeaf(origin); return closeLeaf(p, origin); }
       await saveCurrent(); return closeFile();
     case 'qa': case 'qall': return window.close();
     case 'e': case 'edit': case 'open': {
       const toSplit = args[0] === '-t';
       const f = toSplit ? args[1] : args[0];
       if (!f) return setStatus(`E32: no file name — usage :${cmd} [-t] <path>`);
-      if (toSplit || split.pending || inSplit) return openInSplit(resolve(f));
-      return openFile(resolve(f));
+      const path = resolve(f);
+      if (inSplit) return openInLeaf(origin, path);
+      const pend = pendingLeaf(p);
+      if (pend) return openInLeaf(pend, path);
+      if (toSplit) return openInLeaf(splitFocused('row', origin), path);
+      return openFile(path);
     }
-    case 'vsplit': case 'vs': return openSplit();
-    case 'only': case 'vclose': return closeSplit();
-    case 'term': case 'terminal': return (split.pending || inSplit) ? termInSplit() : toggleTerm();
+    case 'vsplit': case 'vs': return void splitFocused('row', origin);
+    case 'split': case 'sp': return void splitFocused('col', origin);
+    case 'only': case 'vclose': return closeAllSplits(p);
+    case 'term': case 'terminal': {
+      if (inSplit) return termInLeaf(p, origin);
+      const pend = pendingLeaf(p);
+      if (pend) return termInLeaf(p, pend);
+      return toggleTerm();
+    }
     case 'Ex': case 'Explore': return toggleTree();
     case 'cheat': return toggleCheat();
     case 'cal': case 'calendar': return calendar.toggle();
+    case 'tree': case 'log': case 'gitl': case 'git': return gitTree.toggle();
     case 'theme': {
       const name = args[0];
       if (!name) return setStatus(`theme: ${activeThemeName()} — available: ${Object.keys(THEMES).join(', ')}`);
       return applyTheme(name);
     }
     case 'runall': case 'restart': case 'restartall': {
-      const nb = (inSplit && split.kind === 'nb') ? split.nb?.nb : notebooks.get(state.active)?.nb;
+      const nb = (inSplit && origin.kind === 'nb') ? origin.nb?.nb : notebooks.get(state.active)?.nb;
       if (!nb) return setStatus('no notebook active');
       if (cmd === 'runall') return nb.runAll();
       await nb.restartKernel();
@@ -604,7 +848,7 @@ async function runEx(line, origin = 'main') {
       const a = args[0];
       if (!a) return listProjects();
       const n = parseInt(a, 10);
-      const idx = Number.isNaN(n) ? projects.findIndex(p => p.name === a) : n - 1;
+      const idx = Number.isNaN(n) ? projects.findIndex(q => q.name === a) : n - 1;
       if (!projects[idx]) return setStatus(`no such project: ${a} — :proj to list`);
       return switchProject(idx);
     }
@@ -614,16 +858,23 @@ async function runEx(line, origin = 'main') {
 }
 for (const [name, alias] of [
   ['write', 'w'], ['quit', 'q'], ['wq', 'wq'], ['xit', 'x'], ['qall', 'qa'],
-  ['edit', 'e'], ['open', 'open'], ['vsplit', 'vs'], ['only', 'only'],
+  ['edit', 'e'], ['open', 'open'], ['vsplit', 'vs'], ['split', 'sp'], ['only', 'only'],
   ['terminal', 'term'], ['Explore', 'Ex'], ['cheat', 'cheat'], ['theme', 'theme'],
   ['calendar', 'cal'], ['project', 'proj'], ['pquit', 'pq'],
+  ['tree', 'tree'], ['gitlog', 'gitl'], ['log', 'log'], ['git', 'git'],
   ['runall', 'runall'], ['restart', 'restart'], ['restartall', 'restartall'],
   ['tabnext', 'tabn'], ['tabprev', 'tabp']
 ]) {
-  Vim.defineEx(name, alias, (cm, params) => {
-    const origin = cm?.cm6?.dom?.closest('#split') ? 'split' : 'main';
-    runEx([alias, ...(params.args || [])].join(' '), origin);
-  });
+  // defineEx throws if the short form isn't a prefix of the long one; one bad
+  // pair must not take the rest of the renderer (keybinds included) down with it
+  try {
+    Vim.defineEx(name, alias, (cm, params) => {
+      const el = cm?.cm6?.dom;
+      runEx([alias, ...(params.args || [])].join(' '), el ? leafOf(el) : null);
+    });
+  } catch (err) {
+    console.error(`ex command ${name}/${alias} not registered:`, err);
+  }
 }
 
 // ---------- global command bar ----------
@@ -646,7 +897,7 @@ cmdlineInput.addEventListener('keydown', (e) => {
   e.stopPropagation();
   if (e.key === 'Enter') {
     const v = cmdlineInput.value;
-    const origin = cmdlineReturnFocus?.closest?.('#split') ? 'split' : 'main';
+    const origin = leafOf(cmdlineReturnFocus);
     closeCmdline();
     runEx(v, origin);
   }
@@ -654,12 +905,34 @@ cmdlineInput.addEventListener('keydown', (e) => {
 });
 cmdlineInput.addEventListener('blur', () => cmdlineEl.classList.add('hidden'));
 
+// ':' always opens the single global command bar — never CodeMirror-vim's inline
+// command line. Capture phase so the key is swallowed before the editor sees it.
+window.addEventListener('keydown', (e) => {
+  if (e.key !== ':' || e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target;
+  if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') return;
+  if (t.closest?.('.xterm')) return;
+  const editorEl = t.closest?.('.cm-editor');
+  if (editorEl) {
+    // let ':' stay a literal character while inserting; only hijack command modes
+    const view = EditorView.findFromDOM(editorEl);
+    const vs = view && getCM(view)?.state.vim;
+    if (!vs || vs.insertMode) return;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+  openCmdline();
+}, true);
+
 // ---------- themes ----------
 function applyTheme(name) {
   const t = applyThemeVars(name);
   if (!t) { setStatus(`unknown theme: ${name} — :theme to list`); return; }
   const tt = termThemeOf(t);
-  for (const p of projects) { p.term?.setTheme(tt); p.splitTerm?.setTheme(tt); }
+  for (const p of projects) {
+    p.term?.setTheme(tt);
+    for (const l of collectLeaves(p.root)) l.term?.setTheme(tt);
+  }
   localStorage.setItem('quip-theme', name);
   setStatus('theme: ' + name);
 }
@@ -667,7 +940,13 @@ applyThemeVars(localStorage.getItem('quip-theme') && THEMES[localStorage.getItem
   ? localStorage.getItem('quip-theme') : DEFAULT_THEME);
 
 // ---------- tree ----------
-const tree = new FileTree(els.tree, { onOpenFile: (p) => openFile(p), onStatus: setStatus });
+// While the tree is open, keep focus on it after opening a file so files can be
+// opened one after another without the editor stealing focus. Bypass with \ w.
+const tree = new FileTree(els.tree, {
+  onOpenFile: async (p) => { await openFile(p); if (state.treeVisible) tree.focus(); },
+  onStatus: setStatus
+});
+window.quip.onFsChange(() => { tree.refresh(); scheduleDiskSync(); });
 
 async function openFolder() {
   const dir = await window.quip.openFolder();
@@ -697,12 +976,7 @@ function focusActive() {
 // ---------- terminal ----------
 async function toggleTerm() {
   // terminal with nothing open yet gets an implicit home project
-  if (!curP()) {
-    projects.push(makeProject(null));
-    curProj = projects.length - 1;
-    updateStatusProject();
-  }
-  const p = curP();
+  const p = ensureProject();
   state.termVisible = !state.termVisible;
   p.termVisible = state.termVisible;
   els.termwrap.classList.toggle('hidden', !state.termVisible);
@@ -724,7 +998,8 @@ window.addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openFolder(); return; }
   if (mod && e.key.toLowerCase() === 's') {
     e.preventDefault();
-    if (document.activeElement?.closest('#split')) saveSplit(); else saveCurrent();
+    const l = leafOf(document.activeElement);
+    if (l && !l.main) saveLeaf(l); else saveCurrent();
     return;
   }
   if (mod && e.key.toLowerCase() === 'j') { e.preventDefault(); toggleTerm(); return; }
@@ -747,12 +1022,6 @@ window.addEventListener('keydown', (e) => {
     const view = EditorView.findFromDOM(editorEl);
     const vs = view && getCM(view)?.state.vim;
     vimTyping = !vs || vs.insertMode || vs.visualMode;
-  }
-  // ':' outside any editor/terminal opens the global command bar
-  if (!inTerm && !editorEl && !mod && e.key === ':') {
-    e.preventDefault(); e.stopPropagation();
-    openCmdline();
-    return;
   }
   // \e chord for the file tree
   if (!inTerm && !vimTyping && !mod) {
@@ -795,4 +1064,3 @@ function clearLeader() {
 setStatus('');
 showOnly('welcome');
 startCat();
-startAgentMeter();

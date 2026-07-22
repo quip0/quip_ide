@@ -5,6 +5,12 @@ contextBridge.exposeInMainWorld('quip', {
   readdir: (dir) => ipcRenderer.invoke('fs:readdir', dir),
   readFile: (p) => ipcRenderer.invoke('fs:readFile', p),
   writeFile: (p, data) => ipcRenderer.invoke('fs:writeFile', p, data),
+  watchDir: (dir) => ipcRenderer.invoke('fs:watch', dir),
+  onFsChange: (cb) => ipcRenderer.on('fs:changed', () => cb()),
+  // the file as of HEAD, for the git gutter ({ repo:false } outside a repo)
+  gitBase: (p) => ipcRenderer.invoke('git:base', p),
+  gitLog: (dir) => ipcRenderer.invoke('git:log', dir),
+  gitCommitFiles: (dir, hash) => ipcRenderer.invoke('git:commitFiles', dir, hash),
 
   ptyCreate: (opts) => ipcRenderer.invoke('pty:create', opts),
   ptyWrite: (id, data) => ipcRenderer.send('pty:write', { id, data }),
@@ -14,7 +20,6 @@ contextBridge.exposeInMainWorld('quip', {
   onPtyExit: (cb) => ipcRenderer.on('pty:exit', (_e, m) => cb(m)),
 
   jupyterStart: (cwd) => ipcRenderer.invoke('jupyter:start', cwd),
-  agentStats: () => ipcRenderer.invoke('agent:stats'),
 
   zoomBy: (delta) => webFrame.setZoomLevel(webFrame.getZoomLevel() + delta),
   zoomReset: () => webFrame.setZoomLevel(0)
