@@ -1,9 +1,9 @@
 const esbuild = require('esbuild');
 
 esbuild.buildSync({
-  entryPoints: ['src/renderer.js'],
+  entryPoints: ['src/renderer.js', 'src/treewin.js'],
   bundle: true,
-  outfile: 'dist/renderer.js',
+  outdir: 'dist',
   format: 'iife',
   loader: { '.css': 'css', '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
   logLevel: 'info'

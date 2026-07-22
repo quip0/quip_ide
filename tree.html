@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:;" />
+  <title>tree</title>
+  <link rel="stylesheet" href="dist/treewin.css" />
+</head>
+<body>
+  <div id="tw-app">
+    <div id="tw-head">
+      <span id="tw-title"></span>
+      <span id="tw-hint">click commit for files · y yank hash · q/:close close · r/:reload reload</span>
+    </div>
+    <div id="tw-body">
+      <div id="tw-scroll">
+        <svg id="tw-svg"></svg>
+        <div id="tw-rows"></div>
+      </div>
+      <div id="tw-side" class="hidden">
+        <div id="tw-side-head"></div>
+        <div id="tw-side-files"></div>
+      </div>
+    </div>
+  </div>
+  <script src="dist/treewin.js"></script>
+</body>
+</html>

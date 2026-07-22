@@ -12,6 +12,12 @@ contextBridge.exposeInMainWorld('quip', {
   gitLog: (dir) => ipcRenderer.invoke('git:log', dir),
   gitCommitFiles: (dir, hash) => ipcRenderer.invoke('git:commitFiles', dir, hash),
 
+  // :tree visualization window
+  openTree: (dir) => ipcRenderer.invoke('tree:open', dir),
+  onTreeChanged: (cb) => ipcRenderer.on('tree:changed', () => cb()),
+  treeOpenFile: (p) => ipcRenderer.send('tree:openFile', p),
+  onTreeOpenFile: (cb) => ipcRenderer.on('tree:openFileInMain', (_e, p) => cb(p)),
+
   ptyCreate: (opts) => ipcRenderer.invoke('pty:create', opts),
   ptyWrite: (id, data) => ipcRenderer.send('pty:write', { id, data }),
   ptyResize: (id, cols, rows) => ipcRenderer.send('pty:resize', { id, cols, rows }),

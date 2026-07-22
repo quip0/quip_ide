@@ -4,9 +4,10 @@ import '@xterm/xterm/css/xterm.css';
 import { termThemeOf } from './themes.js';
 
 export class Term {
-  constructor(el) {
+  constructor(el, opts = {}) {
     this.el = el;
     this.id = null;
+    this.onFocus = opts.onFocus || (() => {});
     this.term = new Terminal({
       fontFamily: '"SF Mono", Menlo, monospace',
       fontSize: 12,
@@ -20,6 +21,7 @@ export class Term {
     window.quip.onPtyData(({ id, data }) => { if (id === this.id) this.term.write(data); });
     window.quip.onPtyExit(({ id }) => { if (id === this.id) this.id = null; });
     this.term.onData(d => { if (this.id) window.quip.ptyWrite(this.id, d); });
+    el.addEventListener('focusin', () => this.onFocus(this));
     new ResizeObserver(() => this.resize()).observe(el);
   }
 

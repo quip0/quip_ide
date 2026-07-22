@@ -127,7 +127,8 @@ ipcMain.handle('git:log', async (_e, dir) => {
   if (!root) return { repo: false };
   const fmt = ['%H', '%h', '%P', '%an', '%ar', '%D', '%s'].join('%x1f');
   const [log, status, branch] = await Promise.all([
-    gitRun(['log', `--pretty=format:${fmt}`, '-n', String(LOG_LIMIT), 'HEAD'], root),
+    // --topo-order: parents never before their children, so graph lanes always resolve
+    gitRun(['log', '--topo-order', `--pretty=format:${fmt}`, '-n', String(LOG_LIMIT), 'HEAD'], root),
     gitRun(['-c', 'core.quotepath=false', 'status', '--porcelain'], root),
     gitRun(['rev-parse', '--abbrev-ref', 'HEAD'], root)
   ]);
@@ -140,6 +141,45 @@ ipcMain.handle('git:log', async (_e, dir) => {
     st: l.slice(0, 2).trim() || '?', path: l.slice(3).trim().split(' -> ').pop()
   }));
   return { repo: true, root, branch: (branch || '').trim(), commits, changed };
+});
+
+// ---------- git tree window (:tree) ----------
+// One visualization window per repo root. It watches the whole repo — .git
+// included, so commits/branch switches/rebases show up live, not just edits.
+const treeWins = new Map(); // repo root -> { win, watcher }
+
+ipcMain.handle('tree:open', async (_e, dir) => {
+  const root = await gitRoot(dir);
+  if (!root) return { error: 'not a git repository' };
+  const existing = treeWins.get(root);
+  if (existing) { existing.win.focus(); return { ok: true }; }
+  const tw = new BrowserWindow({
+    width: 1000, height: 740,
+    backgroundColor: '#1d2021',
+    titleBarStyle: 'hiddenInset',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false
+    }
+  });
+  tw.loadFile('tree.html', { query: { dir: root } });
+  let watcher = null, timer = null;
+  try {
+    watcher = fs.watch(root, { recursive: true }, () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { if (!tw.isDestroyed()) tw.webContents.send('tree:changed'); }, 150);
+    });
+  } catch {}
+  treeWins.set(root, { win: tw, watcher });
+  tw.on('closed', () => { try { watcher?.close(); } catch {} clearTimeout(timer); treeWins.delete(root); });
+  return { ok: true };
+});
+
+// a file clicked in a tree window opens in the main IDE window
+ipcMain.on('tree:openFile', (_e, p) => {
+  if (win && !win.isDestroyed()) { win.webContents.send('tree:openFileInMain', p); win.focus(); }
 });
 
 ipcMain.handle('git:commitFiles', async (_e, dir, hash) => {

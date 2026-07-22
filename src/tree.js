@@ -15,6 +15,36 @@ export class FileTree {
     await this.loadChildren(this.root);
     this.sel = 0;
     this.render();
+    window.quip.watchDir(dir);
+  }
+
+  // Re-read directories from disk without collapsing what's open or losing the
+  // selection. Called when the watcher reports the folder changed.
+  async refresh() {
+    if (!this.root) return;
+    const selPath = this.rows[this.sel]?.path;
+    await this.reload(this.root);
+    this.rows = [];
+    this.flatten(this.root, this.rows);
+    const idx = this.rows.findIndex(r => r.path === selPath);
+    this.sel = idx >= 0 ? idx : Math.min(this.sel, Math.max(this.rows.length - 1, 0));
+    this.render();
+  }
+
+  // Re-read one open dir, preserving the open state + loaded children of any
+  // subdirectory that still exists, then recurse into those.
+  async reload(node) {
+    if (!node.dir || !node.open) return;
+    const prev = new Map((node.children || []).map(c => [c.path, c]));
+    await this.loadChildren(node);
+    for (const c of node.children) {
+      const old = prev.get(c.path);
+      if (old && old.dir && old.open) {
+        c.open = true;
+        c.children = old.children;
+        await this.reload(c);
+      }
+    }
   }
 
   async loadChildren(node) {

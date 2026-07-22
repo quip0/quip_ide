@@ -1,0 +1,95 @@
+:root {
+  /* gruvbox hard defaults — themes.js overrides at runtime, synced with the main window */
+  --bg: #1d2021;
+  --bg2: #282828;
+  --bg3: #504945;
+  --fg: #ebdbb2;
+  --fg2: #bdae93;
+  --dim: #928374;
+  --accent: #fabd2f;
+  --red: #fb4934;
+  --green: #b8bb26;
+  --yellow: #fabd2f;
+  --blue: #83a598;
+  --orange: #fe8019;
+  --purple: #d3869b;
+  --aqua: #8ec07c;
+  --sel: #3c3836;
+  --border: #3c3836;
+  --mono: "SF Mono", Menlo, monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; overflow: hidden; }
+body { background: var(--bg); color: var(--fg); font-family: var(--mono); font-size: 12px; }
+
+#tw-app { display: flex; flex-direction: column; height: 100vh; }
+
+/* header doubles as the drag region (hiddenInset traffic lights live top-left) */
+#tw-head {
+  flex: none; display: flex; justify-content: space-between; align-items: center;
+  height: 38px; padding: 0 14px 0 84px;
+  border-bottom: 1px solid var(--border); user-select: none;
+  -webkit-app-region: drag;
+}
+#tw-title { color: var(--accent); letter-spacing: 1px; font-size: 13px; }
+#tw-hint { color: var(--dim); font-size: 11px; }
+
+#tw-body { flex: 1; min-height: 0; display: flex; }
+
+#tw-scroll { flex: 1; min-width: 0; overflow: auto; position: relative; padding-top: 6px; }
+#tw-svg { position: absolute; top: 6px; left: 0; }
+#tw-rows { position: relative; }
+
+.tw-row {
+  display: flex; gap: 10px; align-items: center; white-space: nowrap;
+  padding: 0 10px 0 4px; cursor: default;
+}
+.tw-row:hover { background: color-mix(in srgb, var(--sel) 55%, transparent); }
+.tw-row.sel { background: var(--sel); }
+.tw-hash { color: var(--orange); flex: none; }
+.tw-hash.wt { color: var(--yellow); }
+.tw-subj { color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
+.tw-subj.wt { color: var(--yellow); }
+.tw-ref {
+  flex: none; font-size: 10px; padding: 1px 7px; border-radius: 8px;
+  border: 1px solid var(--aqua); color: var(--aqua);
+}
+.tw-ref.head { border-color: var(--accent); color: var(--accent); }
+.tw-ref.tag { border-color: var(--purple); color: var(--purple); }
+.tw-meta { color: var(--dim); margin-left: auto; padding-left: 14px; flex: none; }
+.tw-empty { color: var(--dim); padding: 14px; }
+
+/* side panel: files of the selected commit / working tree */
+#tw-side {
+  flex: none; width: 320px; display: flex; flex-direction: column;
+  border-left: 1px solid var(--border); background: var(--bg2);
+}
+#tw-side.hidden { display: none; }
+#tw-side-head { flex: none; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.tw-sh-subj { color: var(--fg); white-space: normal; word-break: break-word; }
+.tw-sh-subj.wt { color: var(--yellow); }
+.tw-sh-hash { color: var(--orange); font-size: 10px; margin-top: 4px; word-break: break-all; user-select: all; }
+.tw-sh-meta { color: var(--dim); margin-top: 4px; }
+#tw-side-files { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 0; }
+.tw-file { display: flex; gap: 8px; padding: 2px 12px; cursor: pointer; white-space: nowrap; }
+.tw-file:hover { background: var(--sel); }
+.tw-st { white-space: pre; flex: none; color: var(--dim); }
+.tw-st.st-A, .tw-st.st-\? { color: var(--green); }
+.tw-st.st-M { color: var(--yellow); }
+.tw-st.st-D { color: var(--red); }
+.tw-st.st-R { color: var(--purple); }
+.tw-fp { color: var(--fg2); overflow: hidden; text-overflow: ellipsis; }
+
+/* command bar (:close, :reload) — mirrors the main window's cmdline */
+#tw-cmdline {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  display: flex; align-items: center; gap: 2px; min-height: 24px;
+  padding: 4px 10px; background: var(--bg2); border-top: 1px solid var(--border);
+  font-family: var(--mono); font-size: 13px; color: var(--accent);
+}
+#tw-cmdline.hidden { display: none; }
+#tw-cmdline input {
+  flex: 1; border: none; outline: none; background: transparent;
+  color: var(--accent); font-family: var(--mono); font-size: 13px; caret-color: var(--accent);
+}

@@ -155,6 +155,9 @@ kbd {
 
 /* terminal */
 #termwrap { flex: none; height: 260px; border-top: 1px solid var(--border); padding: 4px 6px; background: var(--bg); }
+/* landing: with nothing else open, the terminal is the whole workspace */
+#app.term-full #main { display: none; }
+#app.term-full #termwrap { flex: 1; height: auto; border-top: none; }
 #term { height: 100%; }
 .term-inst { height: 100%; }
 .term-inst.hidden { display: none; }
@@ -189,42 +192,6 @@ kbd {
 #cheat-panel .close-hint { margin-top: 12px; color: var(--dim); }
 
 /* calendar */
-/* git history (:tree) */
-#gt-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 50;
-  display: flex; align-items: center; justify-content: center;
-}
-#gt-panel {
-  display: flex; flex-direction: column; outline: none;
-  background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
-  padding: 14px 18px; width: min(1000px, 92vw); height: min(700px, 86vh);
-}
-#gt-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; user-select: none; }
-#gt-title { color: var(--accent); font-size: 15px; letter-spacing: 1px; }
-#gt-hint { color: var(--dim); font-size: 11px; }
-#gt-list { flex: 1; min-height: 0; overflow-y: auto; border-top: 1px solid var(--border); padding-top: 4px; }
-.gt-empty { color: var(--dim); padding: 12px 4px; }
-.gt-row {
-  display: flex; gap: 8px; align-items: baseline; white-space: nowrap;
-  padding: 1px 4px; font-size: 12px; cursor: default; border-radius: 2px;
-}
-.gt-row.sel { background: var(--sel); }
-.gt-row.gt-link { height: 8px; }
-.gt-graph { color: var(--blue); white-space: pre; flex: none; }
-.gt-graph.head { color: var(--accent); }
-.gt-hash { color: var(--orange); flex: none; }
-.gt-subj { color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
-.gt-subj.wt { color: var(--yellow); }
-.gt-refs { color: var(--aqua); flex: none; }
-.gt-meta { color: var(--dim); margin-left: auto; padding-left: 12px; flex: none; }
-.gt-st { white-space: pre; flex: none; color: var(--dim); }
-.gt-st.st-A, .gt-st.st-\? { color: var(--green); }
-.gt-st.st-M { color: var(--yellow); }
-.gt-st.st-D { color: var(--red); }
-.gt-st.st-R { color: var(--purple); }
-.gt-file { color: var(--fg2); overflow: hidden; text-overflow: ellipsis; }
-.gt-file.dim { color: var(--dim); }
-
 #cal-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 50;
   display: flex; align-items: center; justify-content: center;

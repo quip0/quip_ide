@@ -20,7 +20,6 @@ import { startCat } from './cat.js';
 import { Calendar } from './cal.js';
 import { THEMES, DEFAULT_THEME, applyThemeVars, termThemeOf, activeThemeName } from './themes.js';
 import { gitGutter, loadGitBase } from './gitgutter.js';
-import { GitTree } from './gittree.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -287,6 +286,7 @@ async function switchProject(i) {
   resizeProjectTerms(p);
   if (p.active) await activate(p.active);
   else { showOnly('welcome'); renderTabs(); updateStatusRight(); }
+  updateTermLayout();
   updateStatusProject();
   setStatus(p.folder || '');
 }
@@ -334,6 +334,7 @@ async function doCloseProject(i) {
   els.tree.classList.add('hidden');
   els.termwrap.classList.add('hidden');
   showOnly('welcome'); renderTabs(); updateStatusRight(); updateStatusProject();
+  updateTermLayout();
   setStatus(`closed ${p.name} — ⌘O to open a folder`);
 }
 
@@ -721,7 +722,7 @@ function updatePaneFocus() {
 // ---------- cheatsheet ----------
 const CHEAT = [
   ['GLOBAL', [
-    ['⌘O', 'open folder'], ['\\ e', 'toggle file tree'], ['\\ w', 'cycle pane focus'], ['⌘J', 'toggle terminal'],
+    ['⌘O', 'open folder'], ['\\ e', 'toggle file tree'], ['\\ w', 'cycle pane focus'], ['⌘J', 'terminal in selected pane'], ['⇧⌘J', 'exit terminal (kill shell)'], ['⌘Esc', 'leave terminal (keep it open)'],
     ['⌘S', 'save'], ['⌘+ / ⌘− / ⌘0', 'zoom in / out / reset'],
     ['⌘⇧] / ⌘⇧[', 'next / previous tab'], [':', 'command line (works anywhere)']
   ]],
@@ -735,10 +736,11 @@ const CHEAT = [
     [':w :q :wq :x', 'save / close pane or tab / both'], [':qa', 'quit app'],
     [':open <path>', 'open file (alias :e)'], [':open -t <path>', 'open file in a new split'],
     [':vsplit / :split', 'vertical / horizontal split — repeat as often as you like'],
+    [':close', 'close whatever is focused (split, terminal, tree, calendar, or tab)'],
     [':only', 'close all splits'],
     [':term', 'terminal (fills an empty split, else bottom panel)'],
     [':Ex', 'toggle file tree'], [':cheat', 'this cheatsheet'], [':cal', 'toggle calendar'],
-    [':tree', 'version history of the working branch (aliases :log, :git)'],
+    [':tree', 'git history window, updates live (aliases :log, :git)'],
     [':theme <name>', 'switch theme (bare :theme lists all)']
   ]],
   ['FILE TREE', [
@@ -754,10 +756,10 @@ const CHEAT = [
     ['gg / G', 'first / last cell']
   ]],
   ['HISTORY (:tree)', [
-    ['j / k', 'move'], ['Enter / l', 'expand commit — list the files it touched'],
-    ['h', 'collapse'], ['o / Enter', 'open the selected file'],
-    ['g / G', 'first / last'], ['y', 'yank commit hash'], ['r', 'reload'], ['q / Esc', 'close'],
-    ['', 'top row is the working tree: everything uncommitted right now']
+    ['', 'opens a separate window with the commit graph — updates live'],
+    ['j / k', 'move'], ['g / G', 'first / last'], ['y', 'yank commit hash'],
+    ['click file', 'open it in the editor'], ['r', 'reload'], ['q / Esc', 'close window'],
+    ['', 'top node is the working tree: everything uncommitted right now']
   ]],
   ['CALENDAR (:cal)', [
     ['h j k l / arrows', 'move day (j/k = week)'], ['H / L (or [ ])', 'previous / next month'],
@@ -784,11 +786,14 @@ els.cheat.addEventListener('click', () => toggleCheat(false));
 const calendar = new Calendar(document.body, { onStatus: setStatus });
 
 // ---------- git history ----------
-const gitTree = new GitTree(document.body, {
-  onStatus: setStatus,
-  onOpenFile: (p) => openFile(p),
-  folder: () => state.folder
-});
+// :tree opens a separate live-updating visualization window (src/treewin.js);
+// files clicked there come back here to open in the editor.
+async function openGitTree() {
+  if (!state.folder) return setStatus('no project open — ⌘O to open a folder');
+  const r = await window.quip.openTree(state.folder);
+  if (r?.error) setStatus(r.error);
+}
+window.quip.onTreeOpenFile((p) => openFile(p));
 
 // ---------- ex commands ----------
 // origin: the pane leaf the command was issued from (null → main behaviour)
@@ -816,6 +821,15 @@ async function runEx(line, origin = null) {
       if (toSplit) return openInLeaf(splitFocused('row', origin), path);
       return openFile(path);
     }
+    case 'close': case 'clo': {
+      if (inSplit) return closeLeaf(p, origin);
+      // no split origin → close whichever panel held focus when the command bar opened
+      const a = cmdlineReturnFocus;
+      if (a?.closest?.('#termwrap')) return toggleTerm();
+      if (a === els.tree || a?.closest?.('#tree')) return toggleTree();
+      if (a?.closest?.('#cal-panel')) return calendar.hide();
+      return closeFile();
+    }
     case 'vsplit': case 'vs': return void splitFocused('row', origin);
     case 'split': case 'sp': return void splitFocused('col', origin);
     case 'only': case 'vclose': return closeAllSplits(p);
@@ -828,7 +842,7 @@ async function runEx(line, origin = null) {
     case 'Ex': case 'Explore': return toggleTree();
     case 'cheat': return toggleCheat();
     case 'cal': case 'calendar': return calendar.toggle();
-    case 'tree': case 'log': case 'gitl': case 'git': return gitTree.toggle();
+    case 'tree': case 'log': case 'gitl': case 'git': return openGitTree();
     case 'theme': {
       const name = args[0];
       if (!name) return setStatus(`theme: ${activeThemeName()} — available: ${Object.keys(THEMES).join(', ')}`);
@@ -858,7 +872,7 @@ async function runEx(line, origin = null) {
 }
 for (const [name, alias] of [
   ['write', 'w'], ['quit', 'q'], ['wq', 'wq'], ['xit', 'x'], ['qall', 'qa'],
-  ['edit', 'e'], ['open', 'open'], ['vsplit', 'vs'], ['split', 'sp'], ['only', 'only'],
+  ['edit', 'e'], ['open', 'open'], ['close', 'clo'], ['vsplit', 'vs'], ['split', 'sp'], ['only', 'only'],
   ['terminal', 'term'], ['Explore', 'Ex'], ['cheat', 'cheat'], ['theme', 'theme'],
   ['calendar', 'cal'], ['project', 'proj'], ['pquit', 'pq'],
   ['tree', 'tree'], ['gitlog', 'gitl'], ['log', 'log'], ['git', 'git'],
@@ -953,6 +967,21 @@ async function openFolder() {
   if (!dir) return;
   const existing = projects.findIndex(p => p.folder === dir);
   if (existing >= 0) return switchProject(existing);
+  // the landing terminal runs in an implicit "~" home project — adopt the
+  // folder into it rather than spawning a phantom second project
+  const cur = curP();
+  if (cur && !state.folder && state.tabs.length === 0) {
+    cur.folder = dir; cur.name = base(dir); cur.treeVisible = true;
+    state.folder = dir; state.treeVisible = true;
+    await tree.setRoot(dir);
+    els.tree.classList.remove('hidden');
+    resizeProjectTerms(cur);
+    updateTermLayout();
+    updateStatusProject();
+    setStatus(dir);
+    tree.focus();
+    return;
+  }
   projects.push(makeProject(dir));
   await switchProject(projects.length - 1);
   tree.focus();
@@ -974,12 +1003,23 @@ function focusActive() {
 }
 
 // ---------- terminal ----------
+// The terminal fills the whole workspace when it's the only thing going on —
+// nothing else open (no folder, no tabs). This is the landing view. Once a
+// folder or file is opened, it falls back to the bottom panel.
+function updateTermLayout() {
+  const full = state.termVisible && !state.folder && state.tabs.length === 0;
+  document.getElementById('app').classList.toggle('term-full', full);
+  const p = curP();
+  if (p?.term) requestAnimationFrame(() => p.term.resize());
+}
+
 async function toggleTerm() {
   // terminal with nothing open yet gets an implicit home project
   const p = ensureProject();
   state.termVisible = !state.termVisible;
   p.termVisible = state.termVisible;
   els.termwrap.classList.toggle('hidden', !state.termVisible);
+  updateTermLayout();
   if (state.termVisible) {
     for (const q of projects) q.termEl.classList.toggle('hidden', q !== p);
     const t = mainTerm();
@@ -992,6 +1032,39 @@ async function toggleTerm() {
   }
 }
 
+// ⌘J: open a terminal in the pane the user has selected. A non-main split
+// leaf gets the terminal directly; from the main pane it fills an empty
+// split if one exists, else opens a new split. The bottom-panel terminal
+// (landing view / :term) still dismisses with ⌘J when focus is inside it.
+async function termFocused() {
+  if (state.termVisible && document.activeElement?.closest('#termwrap')) return toggleTerm();
+  const p = ensureProject();
+  const leaves = collectLeaves(p.root);
+  let target = leafOf(document.activeElement) || (leaves.includes(p.focused) ? p.focused : p.main);
+  if (target.main) target = pendingLeaf(p) || splitLeaf(p, target, 'row');
+  return termInLeaf(p, target);
+}
+
+// Actually exit the terminal (⇧⌘J): close the
+// focused terminal split, else kill the bottom terminal's shell and hide it.
+function exitTerm() {
+  const p = curP();
+  if (!p) return;
+  const l = leafOf(document.activeElement);
+  if (l && !l.main && l.kind === 'term') { closeLeaf(p, l); return; }
+  if (!p.term) { setStatus('no terminal to exit'); return; }
+  if (p.term.id) window.quip.ptyKill(p.term.id);
+  p.term.term.dispose();
+  p.term = null;
+  state.termVisible = false;
+  p.termVisible = false;
+  els.termwrap.classList.add('hidden');
+  updateTermLayout();
+  if (state.active) focusActive();
+  else if (state.treeVisible) tree.focus();
+  setStatus('terminal closed');
+}
+
 // ---------- global keybinds ----------
 window.addEventListener('keydown', (e) => {
   const mod = e.metaKey || e.ctrlKey;
@@ -1002,7 +1075,18 @@ window.addEventListener('keydown', (e) => {
     if (l && !l.main) saveLeaf(l); else saveCurrent();
     return;
   }
-  if (mod && e.key.toLowerCase() === 'j') { e.preventDefault(); toggleTerm(); return; }
+  if (mod && e.shiftKey && e.key.toLowerCase() === 'j') { e.preventDefault(); exitTerm(); return; }
+  if (mod && e.key.toLowerCase() === 'j') { e.preventDefault(); termFocused(); return; }
+  if (mod && e.key === 'Escape') {
+    // leave the terminal without closing it
+    if (document.activeElement?.closest?.('.xterm')) {
+      e.preventDefault(); e.stopPropagation();
+      if (state.active) focusActive();
+      else if (state.treeVisible) tree.focus();
+      else setStatus('nothing to focus — terminal is all there is');
+    }
+    return;
+  }
   if (mod && (e.key === '=' || e.key === '+')) { e.preventDefault(); window.quip.zoomBy(0.5); return; }
   if (mod && e.key === '-') { e.preventDefault(); window.quip.zoomBy(-0.5); return; }
   if (mod && e.key === '0') { e.preventDefault(); window.quip.zoomReset(); return; }
@@ -1064,3 +1148,5 @@ function clearLeader() {
 setStatus('');
 showOnly('welcome');
 startCat();
+// land on a terminal, not a welcome page
+toggleTerm();
